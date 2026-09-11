@@ -61,6 +61,21 @@ CYCLE = [
 FOV_H_DEG, FOV_V_DEG = 80.0, 60.0
 SUBSTEPS = 6            # interpolated poses between keyframes
 
+# Which SEGMENTS of the cycle each target actually has to be seen in. Segment s runs
+# from CYCLE[s] to CYCLE[s+1].
+#
+# Scoring a target over the WHOLE cycle punishes a camera for not seeing something it
+# has no business seeing yet. The stack only matters while the tool is going for it;
+# the row only matters once the machine has slewed round to it. Coverage inside the
+# window is the number that should decide a mount. The all-cycle number is kept beside
+# it because a sensor that also sees the rest of the job is worth something for
+# situational awareness, it just is not what it is being chosen for.
+PHASE = {
+    "pick (stack top)": (1, 2, 3),        # to stack, at stack, grip -> lift
+    "tcp (cups)":       (2, 3, 6, 7),     # cups engaging, and cups releasing
+    "place (row)":      (5, 6, 7),        # slew round, set down, release
+}
+
 
 def rpy_to_R(r, p, y):
     cr, sr, cp, sp, cy, sy = (math.cos(r), math.sin(r), math.cos(p),
@@ -224,17 +239,20 @@ def main(argv=None) -> int:
         for s in range(SUBSTEPS):
             f = s / SUBSTEPS
             vals = [a[k + 1] + (b[k + 1] - a[k + 1]) * f for k in range(4)]
-            poses.append((a[0], dict(zip(
+            poses.append((i, a[0], dict(zip(
                 ("swing_joint", "boom_joint", "arm_joint", "bucket_joint"),
                 [math.radians(v) for v in vals]))))
 
     tan_h = math.tan(math.radians(args.fov_h) / 2.0)
     tan_v = math.tan(math.radians(args.fov_v) / 2.0)
-    tnames = list(targets(poses[0][1]).keys())
+    tnames = list(targets(poses[0][2]).keys())
     score = {c: {t: 0 for t in tnames} for c in cams}
+    inwin = {c: {t: 0 for t in tnames} for c in cams}
     dists = {c: {t: [] for t in tnames} for c in cams}
+    winlen = {t: sum(1 for seg, _, _ in poses if seg in PHASE.get(t, ()))
+              for t in tnames}
 
-    for _, pose in poses:
+    for seg, _, pose in poses:
         world = {}
         for lk, xyz, R, half in m.boxes:
             T = m.fk(lk, pose)
@@ -262,6 +280,8 @@ def main(argv=None) -> int:
                         break
                 if not blocked:
                     score[c][tn] += 1
+                    if seg in PHASE.get(tn, ()):
+                        inwin[c][tn] += 1
                     dists[c][tn].append(float(np.linalg.norm(pt - eye)))
 
     n = len(poses)
@@ -271,21 +291,32 @@ def main(argv=None) -> int:
             if args.ignore_tool_adapter else "every link occludes, adapter included")
     print(f"  FOV {args.fov_h:g} x {args.fov_v:g} deg   {mode}")
     print("=" * 92)
-    head = f"  {'mount':18s}" + "".join(f"{t:>22s}" for t in tnames) + f"{'총점':>8s}"
+    print(f"  구간(window) = 그 타깃을 실제로 봐야 하는 사이클 구간만 집계")
+    for t in tnames:
+        segs = PHASE.get(t, ())
+        names = " / ".join(CYCLE[s][0] for s in segs)
+        print(f"     {t:18s} {winlen[t]:3d} poses  [{names}]")
+    print("-" * 92)
+    head = f"  {'mount':18s}" + "".join(f"{t:>26s}" for t in tnames)
     print(head)
+    print(f"  {'':18s}" + "".join(f"{'구간':>10s}{'전체':>7s}{'거리':>9s}" for _ in tnames))
     print("  " + "-" * (len(head) - 2))
-    ranked = sorted(cams, key=lambda c: -sum(score[c].values()))
-    for c in ranked:
+
+    def keyf(c):
+        return -sum(inwin[c][t] / max(winlen[t], 1) for t in tnames)
+
+    for c in sorted(cams, key=keyf):
         row = f"  {c:18s}"
         for t in tnames:
-            pct = 100.0 * score[c][t] / n
+            w = 100.0 * inwin[c][t] / max(winlen[t], 1)
+            a = 100.0 * score[c][t] / n
             d = np.mean(dists[c][t]) if dists[c][t] else float("nan")
-            row += f"{pct:9.0f}% {('%.1fm' % d) if dists[c][t] else '  --':>11s}"
-        row += f"{100.0 * sum(score[c].values()) / (n * len(tnames)):7.0f}%"
+            row += f"{w:9.0f}%{a:6.0f}%{('%.1fm' % d) if dists[c][t] else '   --':>9s}"
         print(row)
     print("=" * 92)
-    print("  %  = fraction of the cycle where the target is in view AND unoccluded")
-    print("  m  = mean distance to the target while it is visible")
+    print("  구간 = 그 타깃을 봐야 하는 구간에서 보이고 가려지지 않은 비율  <- 판단 기준")
+    print("  전체 = 사이클 전 구간 기준 (상황인지용 참고)")
+    print("  거리 = 보이는 동안의 평균 거리")
     return 0
 
 
