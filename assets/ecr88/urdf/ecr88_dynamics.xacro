@@ -182,26 +182,52 @@
   <xacro:property name="lim_arm_lower"    value="${deg *   0.00}"/>   <!-- ASSUMPTION [L44], was DERIVED until the H residual was withdrawn (H5)  arm fully OUT, collinear with the boom. NO published figure discriminates this placement. Standing support: it is the standard layout, and the arm cylinder is within 5.6 deg of dead centre here (moment arm 72 mm), so a STRUCTURAL stop belongs about there: prefer a SOFT joint limit. If the true out stop is -10 deg instead, ref_bucket_radius becomes 0.802 and lim_boom_mech_lower becomes -66.56 deg. Teo's cylinder strokes settle it. -->
   <xacro:property name="lim_arm_upper"    value="${deg * 124.00}"/>   <!-- OEM-TEAM span [L43]  arm fully IN (interior angle 56 deg). -->
 
+  <!-- 2026-09-11 UPDATE, Olivia (Slack #simulation, 11:28 KST). The original relay of her
+       figures carried no direction words; the full message does:
+           "암 : 31(암아웃) ~ 155(암인)"
+       So the angle GROWS as the arm curls IN. That is the same sense as this URDF
+       (positive arm_joint = arm in, established by FK in H3), which independently
+       CONFIRMS the sign correction — it is no longer an inference.
+       It also supports the placement below: 31 = arm fully OUT maps onto lim_arm_lower,
+       and lim_arm_lower is set at the collinear out stop, giving 0..124 with a constant
+       -31 deg offset between machine and URDF frames. What Olivia's numbers still do NOT
+       settle is whether her 31 is measured at the SAME posture as our collinear zero;
+       Teo's cylinder strokes remain the thing that decides it. -->
+
   <!-- ARM, literal OEM-TEAM placement, sign corrected per H3. One edit away if Olivia
        confirms the interior angle reading. Cylinder infeasible as noted above. -->
   <xacro:property name="lim_arm_oem_lower" value="${deg *  25.00}"/>  <!-- OEM-TEAM literal [L45]  interior angle 155 deg. -->
   <xacro:property name="lim_arm_oem_upper" value="${deg * 149.00}"/>  <!-- OEM-TEAM literal [L45]  interior angle 31 deg. -->
 
-  <!-- BUCKET (the tool carrier about the bucket pin). The 190 deg SPAN is PUBLISHED and
-       survives the swap from bucket to tiltrotator because it is a property of the
-       cylinder and 4 bar, not of the tool. Only the ZERO moves, and we hold no drawing of
-       the tiltrotator hitch, so the PLACEMENT is class typical: positioned so the tool
-       collinear posture that max reach and max depth both require sits inside the range
-       with about 45 deg of over dump beyond it. -->
-  <xacro:property name="lim_bucket_lower" value="${deg * -100.00}"/>  <!-- PUBLISHED span [L47] + CLASS-TYPICAL placement [L48]  fully dumped / open. -->
-  <xacro:property name="lim_bucket_upper" value="${deg *   90.00}"/>  <!-- PUBLISHED span [L47] + CLASS-TYPICAL placement [L48]  fully curled. Span is exactly 190 deg. -->
+  <!-- BUCKET (the tool carrier about the bucket pin).
+       SUPERSEDED 2026-09-11 by Olivia (Slack #simulation, 11:28 KST), quoted verbatim:
+           "ECR88 기준입니다 ... 버킷 : -126(버킷아웃) ~ 43(버킷인)"
+       That is the REAL machine as built, with the tiltrotator and PanelLift head fitted.
+       It replaces the previous PUBLISHED-span + CLASS-TYPICAL-placement pair, which read
+       -100..+90 from Volvo's published 190 deg bucket rotation. Span drops 190 -> 169 deg:
+       the published 190 belongs to a bucket on its own lugs, not to this tool stack.
 
-  <!-- TILT. Nothing whatsoever was found on the Xpanner X1 PanelLift or its tiltrotator. -->
-  <xacro:property name="lim_tilt_lower"   value="${deg * -40.00}"/>   <!-- CLASS-TYPICAL, NO SOURCE [L49]  engcon and Rototilt units in the 6-11 t class are 2 x 40 deg; Steelwrist is +/-45. -->
-  <xacro:property name="lim_tilt_upper"   value="${deg *  40.00}"/>   <!-- CLASS-TYPICAL, NO SOURCE [L49] -->
+       SIGN: checked by FK before adopting, not assumed. Holding boom +11.53, arm +60 and
+       sweeping bucket_joint, the TCP measured from the bucket pin goes
+           bucket = -126  ->  (+1.488, -0.206)  reaching forward   = 버킷아웃
+           bucket =  +43  ->  (-1.500, -0.081)  folded back        = 버킷인
+       so negative = out, positive = in, which is Olivia's convention exactly. The numbers
+       transfer with NO offset and NO sign flip. -->
+  <xacro:property name="lim_bucket_lower" value="${deg * -126.00}"/>  <!-- OEM-TEAM [L47]  버킷아웃, fully dumped / open. -->
+  <xacro:property name="lim_bucket_upper" value="${deg *   43.00}"/>  <!-- OEM-TEAM [L47]  버킷인, fully curled. Span 169 deg. -->
 
-  <!-- ROTATOR is CONTINUOUS: no lim_rotator_* exists on purpose. The survey corroborates
-       the axis, distRotToAtt being purely -Z (0, 0, -0.2615). [L50] -->
+  <!-- TILT.
+       SUPERSEDED 2026-09-11 by Olivia (same message): "틸트 : -45~45".
+       The previous value was a CLASS-TYPICAL +/-40 with no source at all; the note there
+       already observed that Steelwrist units run +/-45, and the real machine is +/-45. -->
+  <xacro:property name="lim_tilt_lower"   value="${deg * -45.00}"/>   <!-- OEM-TEAM [L49] -->
+  <xacro:property name="lim_tilt_upper"   value="${deg *  45.00}"/>   <!-- OEM-TEAM [L49] -->
+
+  <!-- ROTATOR stays CONTINUOUS: no lim_rotator_* exists on purpose. Olivia's
+       "로테이트 : -180 ~ 180" is the full circle, i.e. it does NOT constrain the joint.
+       A continuous joint already covers it, and modelling it as revolute with +/-pi stops
+       would invent a hard stop at the wrap point that the real rotator does not have.
+       The survey corroborates the axis, distRotToAtt being purely -Z (0, 0, -0.2615). [L50] -->
 
   <!-- Passive 4 bar dressing branch. The URDF cut is at the conn rod / output link pin,
        so this branch is VISUAL ONLY and carries no load. Wide placeholders. -->
