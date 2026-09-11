@@ -424,22 +424,75 @@
 
   <!-- ============================================================================
        [4]  VELOCITY  [rad/s]
-       Derived as flow / bore area / moment arm, assuming the Stage V triple pump
-       (2x68+54 l/min) sums 136 l/min onto one implement function. THAT SUMMATION IS AN
-       ASSUMPTION [L65]. The moment arm collapses at the end stops (and passes through
-       exact zero at the arm cylinder's dead centre), so the instantaneous rate there
-       diverges: 1.0 rad/s covers at least 85 % of each joint's travel and PhysX clamps
-       near the stops, which is correct behaviour anyway.
+
+       THESE ARE THE MACHINE'S OWN CALIBRATED NUMBERS, not our derivation.
+       XpannerLab/X1Exc  ControlModel/Data/ECR88D_LongArm.m, struct reqSpdToActCmd.
+       Each axis carries a 3 point table  X = [0, 0.001, vmax]  ->  Y = [0, deadband, cmdmax]
+       mapping a REQUESTED JOINT SPEED to a proportional valve command in percent. The
+       last X entry is therefore the fastest speed the firmware will ever ask for, and
+       the last Y entry is the command it asks for there.
+
+       WHAT THIS REPLACED, AND WHY IT WAS WRONG
+       The previous values here were derived as flow / bore area / moment arm with the
+       Stage V triple pump (2x68+54 l/min) summed onto one function. Every one of them
+       came out 2.0 to 3.0x the firmware number, consistently, which is the signature of
+       a wrong assumption rather than scattered error. Two reasons, both checkable:
+         - the pump does not sum onto one implement function the way that derivation
+           assumed (flagged there as an assumption, [L65]);
+         - auto mode caps the valve at PropVlvCmdAutoLimit = 70 % (SysPar.m:251), and
+           the tables top out at 60-80 %, so the machine never opens the valve fully.
+       For SIL the firmware number is the one that matters: it is the envelope the
+       controller actually commands inside. Keeping a limit 2.4x above it only gives an
+       overshooting drive room to run away to speeds the real machine cannot reach.
+
+       ASYMMETRY. Every axis is calibrated separately in each direction and they differ
+       (boom down is 17 % faster than boom up; link out is 79 % faster than link in).
+       URDF carries ONE velocity per joint, so the limit below takes the faster of the
+       two and the pair is preserved in section [4b] for the actuator model that needs it.
        ============================================================================ -->
-  <xacro:property name="vel_swing"    value="${8.3 * 2 * pi / 60}"/> <!-- PUBLISHED [L67]  8.3 r/min = 0.869 rad/s, ECR88D Stage V. SOURCE CONFLICT: the Stage IIIB brochure, the FR T4f brochure and the Volvo US site all say 9.3 r/min (0.974 rad/s). Adopted the Stage V figure to stay consistent with the Stage V mass anchor. -->
-  <xacro:property name="vel_boom"     value="1.0"/>       <!-- DERIVED [L66]  105 mm bore, 136 l/min gives 0.262 m/s rod speed; moment arm runs 0.146 to 0.476 m over the mechanical range, so the joint rate runs 0.55 to 1.80 rad/s. Full stroke in 3.2 s, class norm 3-5 s. -->
-  <xacro:property name="vel_arm"      value="1.0"/>       <!-- DERIVED [L66]  90 mm bore, 0.356 m/s rod speed; moment arm 0.181 to 0.530 m, joint rate 0.67 to 1.97 rad/s. Full stroke in 2.3 s. -->
-  <xacro:property name="vel_bucket"   value="1.0"/>       <!-- DERIVED [L66]  85 mm bore; the 4 bar gives a 0.267 m moment arm at the bucket pin, so 0.75 rad/s on one pump section and 1.50 rad/s flow summed. -->
-  <xacro:property name="vel_tilt"     value="0.5"/>       <!-- CLASS-TYPICAL, NO SOURCE [L68]  about 80 deg of tilt in 3 s. -->
-  <xacro:property name="vel_rotator"  value="1.0"/>       <!-- CLASS-TYPICAL, NO SOURCE [L68]  about 9.5 r/min continuous. Volvo's only tiltrotator relevant published figure is the "slope and rotator" aux circuit: see aux_rotator_flow_lpm in section [7], and note it is 28 l/min on Stage V, NOT the widely quoted Stage IIIB 35. -->
-  <xacro:property name="vel_inp_link" value="1.0"/>       <!-- DERIVED  follows the bucket branch it is driven by. -->
-  <xacro:property name="vel_conn_rod" value="1.0"/>       <!-- GUESS  follows the driven branch; visual only. -->
+  <xacro:property name="vel_swing"    value="0.5889427"/> <!-- OEM-FIRMWARE  swingLe 0.5889 / swingRi 0.5196 rad/s = 5.6 / 5.0 r/min. NOTE this is well under the published free swing speed (8.3 r/min, 0.869 rad/s): swing is the one axis whose command is capped at 60 % instead of 80 %, which is what you would do on a machine carrying glass. The published figure describes the bare ECR88; this one describes it under X1. -->
+  <xacro:property name="vel_boom"     value="0.48"/>      <!-- OEM-FIRMWARE  bm1Up 0.41 / bm1Down 0.48 rad/s -->
+  <xacro:property name="vel_arm"      value="0.43"/>      <!-- OEM-FIRMWARE  armIn 0.38 / armOut 0.43 rad/s -->
+  <xacro:property name="vel_bucket"   value="0.50"/>      <!-- OEM-FIRMWARE  linkIn 0.28 / linkOut 0.50 rad/s. The firmware calls this axis "link", not "bucket": on this machine the cylinder drives the 4 bar input link and the attachment hangs off the output link. Same joint, the firmware's name for it is the more accurate one. -->
+  <xacro:property name="vel_tilt"     value="0.2311245"/> <!-- OEM-FIRMWARE  tiltPosi 0.2033 / tiltNega 0.2311 rad/s -->
+  <xacro:property name="vel_rotator"  value="0.342202"/>  <!-- OEM-FIRMWARE  rotPosi 0.3186 / rotNega 0.3422 rad/s = 3.3 r/min. Our CLASS-TYPICAL guess of 9.5 r/min was 2.9x too fast. -->
+  <xacro:property name="vel_inp_link" value="${vel_bucket}"/> <!-- ALIAS  the link axis above IS this joint. -->
+  <xacro:property name="vel_conn_rod" value="${vel_bucket}"/> <!-- ALIAS  driven branch of the same 4 bar. -->
   <xacro:property name="vel_outp_link" value="${vel_bucket}"/> <!-- ALIAS  same joint as bucket_joint. -->
+  <xacro:property name="vel_dozer"    value="0.5"/>       <!-- GUESS  the blade table is a passthrough (X = Y = [0, 0.001, 80]), i.e. the blade is NOT speed calibrated: it is commanded open loop. No firmware speed exists to take. -->
+
+  <!-- ============================================================================
+       [4b]  VALVE COMMAND MODEL  [percent]
+       Same source. Needed the moment the firmware is in the loop, because the firmware
+       does not command joint angles, it commands these valves.
+
+         deadband  the command at which the axis just begins to move (table X = 0.001).
+                   Below it the spool has not cracked and the joint does not move at all.
+         cmdmax    the command at vmax above.
+
+       Two more from SysPar.m that shape the same signal:
+         PropVlvCmdMinOutpHold = 32 % on every axis  (SysPar.m:230-250)
+             minimum output once moving, to stop the spool hunting around the deadband
+         PropVlvCmdAutoLimit   = 70 %                (SysPar.m:251)
+             ceiling in auto mode, below several of the cmdmax values below
+
+       Nothing in the URDF consumes these yet. They live here so the number sits with the
+       joint it belongs to when the valve model is written.
+       ============================================================================ -->
+  <xacro:property name="vlv_swing_le"  value="32.0"/>  <xacro:property name="vlv_swing_le_max"  value="60.0"/>
+  <xacro:property name="vlv_swing_ri"  value="28.7"/>  <xacro:property name="vlv_swing_ri_max"  value="60.0"/>
+  <xacro:property name="vlv_boom_up"   value="34.0"/>  <xacro:property name="vlv_boom_up_max"   value="80.0"/>
+  <xacro:property name="vlv_boom_dn"   value="31.0"/>  <xacro:property name="vlv_boom_dn_max"   value="80.0"/>
+  <xacro:property name="vlv_arm_in"    value="27.0"/>  <xacro:property name="vlv_arm_in_max"    value="80.0"/>
+  <xacro:property name="vlv_arm_out"   value="31.0"/>  <xacro:property name="vlv_arm_out_max"   value="80.0"/>
+  <xacro:property name="vlv_link_in"   value="30.0"/>  <xacro:property name="vlv_link_in_max"   value="70.0"/>
+  <xacro:property name="vlv_link_out"  value="31.0"/>  <xacro:property name="vlv_link_out_max"  value="70.0"/>
+  <xacro:property name="vlv_tilt_pos"  value="19.5"/>  <xacro:property name="vlv_tilt_neg"      value="19.5"/>
+  <xacro:property name="vlv_rot_pos"   value="17.5"/>  <xacro:property name="vlv_rot_neg"       value="17.5"/>
+  <xacro:property name="vlv_blade"     value="25.0"/>
+  <xacro:property name="vlv_min_hold"  value="32.0"/>  <!-- SysPar.m:230  every axis -->
+  <xacro:property name="vlv_auto_max"  value="70.0"/>  <!-- SysPar.m:251  auto mode ceiling -->
+  <xacro:property name="ctrl_sample_time" value="0.01"/> <!-- SysPar.m:1  100 Hz, matches the 10 ms CAN3 rate -->
 
   <!-- ============================================================================
        [5]  JOINT DYNAMICS

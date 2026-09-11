@@ -111,6 +111,35 @@ VARIANT_OVERRIDES = {
     "ECR88_KIJANG": {"offsets": {}, "lengths": {}},
 }
 
+# --------------------------------------------------------------------------- #
+# A SECOND ground truth, and it outranks the sheet.
+#
+# XpannerLab/X1Exc ships the machine's own parameter files -- ControlModel/Data/
+# ECR88D_LongArm.m and ECR88D_ShortArm.m -- using the SAME parameter names as the
+# sheet. Comparing the two: 21 of 22 shared scalars and 10 of 11 shared vectors agree
+# to 1e-6, which is a strong check on the whole geometry chain. The rows below are the
+# ones that do NOT agree, and in each case the firmware is what actually runs on the
+# machine, so the asset follows the firmware and the validator has to as well --
+# otherwise a correct asset warns forever and people learn to ignore the block.
+#
+# Raise these with the OEM team rather than quietly living with them: for the antenna
+# offset the 71 mm gap is bigger than the firmware's own placement tolerance.
+FIRMWARE_OVERRIDES = {
+    "offsets": {
+        # sheet -1.416 for all three variants; both firmware variants say -1.345.
+        # X and Y agree exactly, so it is a mount stack height, not a re-survey.
+        "distAntMainToChs": (0.57, -0.087, -1.345),
+    },
+    "lengths": {},
+}
+
+
+def apply_firmware():
+    """Fold the firmware's values over the sheet. Call AFTER apply_variant."""
+    GT_OFFSETS.update(FIRMWARE_OVERRIDES["offsets"])
+    GT_LENGTHS.update(FIRMWARE_OVERRIDES["lengths"])
+    return len(FIRMWARE_OVERRIDES["offsets"]) + len(FIRMWARE_OVERRIDES["lengths"])
+
 
 def read_variant_from_params(urdf_dir):
     """Return the machine_variant the xacro is actually set to, or None."""
@@ -1446,6 +1475,7 @@ def main(argv=None) -> int:
         print(f"[SKIP] unknown machine_variant {variant!r}; ground truth left at 기장",
               file=sys.stderr)
         variant, variant_src = "ECR88_KIJANG", f"fallback (unknown {variant})"
+    n_fw = apply_firmware()
 
     log = Log()
     print("=" * 108)

@@ -378,7 +378,19 @@
        house: p_ant_in_chs = -distAntMainToChs. -->
   <xacro:property name="distAntMainToChsX"     value="0.57"/>
   <xacro:property name="distAntMainToChsY"     value="-0.087"/>
-  <xacro:property name="distAntMainToChsZ"     value="-1.416"/>
+  <!-- CONFLICT, resolved in favour of the firmware. The release sheet says -1.416 for
+       ALL THREE variants; ECR88D_LongArm.m and ECR88D_ShortArm.m both say -1.345, a
+       71 mm difference. X and Y agree exactly in every source, so this is a pure stack
+       height change: same antenna footprint, different mount or spacer. The sheet row is
+       marked "Display on Tablet", i.e. it feeds an operator readout, which is the kind of
+       row that does not get revised when hardware moves. The firmware value is what the
+       machine's position solution is actually computed with, so for SIL it is the one
+       that has to be here.
+       WORTH RAISING WITH OLIVIA: 71 mm is larger than the firmware's own placement
+       tolerance (releaseHgt = 20 mm, releaseEasting/Northing = 20 mm), so whichever
+       number is stale, somebody is placing panels against a shifted reference.
+       Note LenUpZ_est below is derived from this, so the cab roof estimate moves with it. -->
+  <xacro:property name="distAntMainToChsZ"     value="-1.345"/> <!-- OEM-FIRMWARE  (sheet: -1.416) -->
 
   <!-- AntMain -> AntAux. Dual-antenna heading baseline: |(0.682,0.959,0)|
        = 1.1797 m. Expressed relative to AntMain, NOT to the chassis. -->
@@ -453,8 +465,13 @@
 
   <!-- 처리구분 = Update after Calibration.
        The ONE row in the whole parameter set that is genuinely a joint LIMIT
-       rather than a mounting offset: -16 deg fork up-limit. -->
-  <xacro:property name="angForkUpLimit"        value="${-pi/180*16}"/>
+       rather than a mounting offset. The sheet gives it to the nearest degree; the
+       firmware carries the calibrated value, and "Update after Calibration" is the
+       sheet telling us to expect exactly that. VARIANT SPECIFIC:
+         ECR88D_LongArm.m  (US, 2.1 m)  -14.19471 deg   <- this build
+         ECR88D_ShortArm.m (KR, 1.7 m)  -16.3246  deg
+       so the sheet's -16 was the Korean machine's number all along. -->
+  <xacro:property name="angForkUpLimit"        value="${-pi/180*14.19471}"/> <!-- OEM-FIRMWARE -->
 
   <!-- Fork / panel geometry, sheet `old`, reference only -->
   <xacro:property name="LenPLX"                value="1.086"/>
@@ -1073,11 +1090,12 @@
        LenPanelHeight); the sizes below are the bits the sheet does not carry.
        .................................................................. -->
   <xacro:property name="geo_fork_clear"        value="0.15"/>   <!-- ASSUMPTION  m, carriage root ahead of the track front -->
-  <xacro:property name="geo_fork_len"          value="1.45"/>    <!-- ASSUMPTION  m, tine length -->
+  <xacro:property name="geo_fork_len"          value="1.06"/>    <!-- OEM-FIRMWARE  m, lenForkBlade. Same 1.06 in BOTH ECR88D_LongArm.m and ECR88D_ShortArm.m, so it is the carriage, not the arm variant. Our 1.45 ASSUMPTION was 37 % long. -->
   <xacro:property name="geo_fork_t"            value="0.07"/>    <!-- ASSUMPTION  m, pallet/backrest plate -->
   <xacro:property name="geo_fork_back_h"       value="1.25"/>    <!-- ASSUMPTION  m, backrest height -->
-  <xacro:property name="geo_panel_t"           value="0.040"/>   <!-- ASSUMPTION  m, one module incl. frame -->
-  <xacro:property name="n_panels"              value="12"/>      <!-- scene choice, not data -->
+  <xacro:property name="geo_panel_t"           value="0.030"/>   <!-- OEM-FIRMWARE  m, panelThickness. Only ECR88D_ShortArm.m carries it; the long arm file has no panel block, so this is the Korean machine's module and the US one may differ. -->
+  <xacro:property name="n_panels"              value="12"/>      <!-- scene choice, not data. A FULL stack is panels_per_stack below; 12 is what we draw so the fork is not hidden behind glass. -->
+  <xacro:property name="panels_per_stack"      value="30"/>      <!-- OEM-FIRMWARE  panelCntPerStack, ECR88D_ShortArm.m. 30 x 30 mm = 0.90 m of glass, which is the height the fork and the pick sequence are designed around. -->
   <xacro:property name="m_panel"               value="23.0"/>    <!-- CLASS-TYPICAL  kg, 72-cell glass-glass -->
   <xacro:property name="m_fork"                value="280.0"/>   <!-- CLASS-TYPICAL  kg, carriage + backrest -->
   <!-- Suction cup. The sheet records LenSDX = LenSDY = 0 for ECR88, i.e. the pad was
