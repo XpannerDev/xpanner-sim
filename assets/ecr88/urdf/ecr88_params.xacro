@@ -1066,6 +1066,27 @@
   <xacro:property name="geo_marker_r"          value="0.03"/>    <!-- ESTIMATE (T11) m, cosmetic -->
 
   <!-- ..................................................................
+       [15][D3] FORK CARRIAGE, PANEL STACK, SUCTION CUPS.
+       Shape for the part of the machine that actually feeds it: modules ride on a
+       forklift carriage at the front and the tool lifts them off one at a time.
+       Positions come from the sheet (LenPLX/Y/Z, AlphaPL1/2, LenPLWidth,
+       LenPanelHeight); the sizes below are the bits the sheet does not carry.
+       .................................................................. -->
+  <xacro:property name="geo_fork_clear"        value="0.15"/>   <!-- ASSUMPTION  m, carriage root ahead of the track front -->
+  <xacro:property name="geo_fork_len"          value="1.45"/>    <!-- ASSUMPTION  m, tine length -->
+  <xacro:property name="geo_fork_t"            value="0.07"/>    <!-- ASSUMPTION  m, pallet/backrest plate -->
+  <xacro:property name="geo_fork_back_h"       value="1.25"/>    <!-- ASSUMPTION  m, backrest height -->
+  <xacro:property name="geo_panel_t"           value="0.040"/>   <!-- ASSUMPTION  m, one module incl. frame -->
+  <xacro:property name="n_panels"              value="12"/>      <!-- scene choice, not data -->
+  <xacro:property name="m_panel"               value="23.0"/>    <!-- CLASS-TYPICAL  kg, 72-cell glass-glass -->
+  <xacro:property name="m_fork"                value="280.0"/>   <!-- CLASS-TYPICAL  kg, carriage + backrest -->
+  <!-- Suction cup. The sheet records LenSDX = LenSDY = 0 for ECR88, i.e. the pad was
+       never measured, so the cups are sized to what lifts a module: four 200 mm cups
+       is the usual arrangement for a ~25 kg glass panel. CLASS-TYPICAL. -->
+  <xacro:property name="geo_suction_cup_r"     value="0.10"/>    <!-- CLASS-TYPICAL  m -->
+  <xacro:property name="geo_suction_cup_h"     value="0.06"/>    <!-- CLASS-TYPICAL  m -->
+
+  <!-- ..................................................................
        [15][D2] SHAPE, not size.  Added 2026-09-11 after the first Isaac Sim
        view: the kinematics were right but the machine did not read as an
        excavator, because every member was a straight rod and the whole upper

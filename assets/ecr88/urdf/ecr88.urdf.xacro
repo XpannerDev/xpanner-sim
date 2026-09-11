@@ -211,6 +211,11 @@
        each. Default OFF until that is understood; the boom cylinder is the visible one
        anyway. -->
   <xacro:arg name="model_arm_cylinder"  default="false"/>
+  <!-- Front fork carriage and the stack of modules riding on it. This is how the
+       machine actually feeds itself, so it is on by default. -->
+  <xacro:arg name="model_fork"          default="true"/>
+  <!-- Candidate camera/lidar mount frames. Zero mass, no geometry beyond a marker. -->
+  <xacro:arg name="model_sensor_mounts" default="true"/>
   <xacro:arg name="mesh_package"        default="xpanner_sim"/>
   <xacro:arg name="mesh_dir"            default="assets/ecr88/meshes"/>
   <xacro:arg name="mesh_visual_ext"     default="dae"/>
@@ -353,6 +358,7 @@
   <material name="xpanner_steel"> <color rgba="0.55 0.57 0.60 1"/></material>
   <material name="xpanner_accent"><color rgba="0.85 0.25 0.10 1"/></material>
   <material name="xpanner_frame"> <color rgba="0.10 0.60 0.90 1"/></material>
+  <material name="xpanner_panel"> <color rgba="0.09 0.13 0.28 1"/></material>
 
   <!-- =====================================================================
        1. UNDERCARRIAGE
@@ -1050,6 +1056,27 @@
                   xyz="0 0 ${geo_pad_t * half}">
       <box size="${geo_pad_x} ${geo_pad_y} ${geo_pad_t}"/>
     </xacro:viscol>
+    <!-- FOUR SUCTION CUPS. The tool does not press a plate against the module, it
+         grips one module with four cups; that is the actual end effector and it is
+         what a camera has to see land on the glass. Laid out on the corners of the
+         pad, inset by one cup radius so they sit on the module rather than over its
+         edge. Cup size is CLASS-TYPICAL: the sheet records LenSDX = LenSDY = 0 for
+         this machine, which is "not measured", so the pad itself is already the
+         LenPLWidth x LenPanelHeight stand-in (T9). -->
+    <xacro:property name="cup_dx" value="${geo_pad_x * half - geo_suction_cup_r}"/>
+    <xacro:property name="cup_dy" value="${geo_pad_y * half - geo_suction_cup_r}"/>
+    <xacro:detail_visual material="xpanner_dark" xyz="${ cup_dx} ${ cup_dy} ${-geo_suction_cup_h * half}">
+      <cylinder radius="${geo_suction_cup_r}" length="${geo_suction_cup_h}"/>
+    </xacro:detail_visual>
+    <xacro:detail_visual material="xpanner_dark" xyz="${ cup_dx} ${-cup_dy} ${-geo_suction_cup_h * half}">
+      <cylinder radius="${geo_suction_cup_r}" length="${geo_suction_cup_h}"/>
+    </xacro:detail_visual>
+    <xacro:detail_visual material="xpanner_dark" xyz="${-cup_dx} ${ cup_dy} ${-geo_suction_cup_h * half}">
+      <cylinder radius="${geo_suction_cup_r}" length="${geo_suction_cup_h}"/>
+    </xacro:detail_visual>
+    <xacro:detail_visual material="xpanner_dark" xyz="${-cup_dx} ${-cup_dy} ${-geo_suction_cup_h * half}">
+      <cylinder radius="${geo_suction_cup_r}" length="${geo_suction_cup_h}"/>
+    </xacro:detail_visual>
   </link>
   <joint name="contact_surface_joint" type="fixed">
     <parent link="probe_link"/>
@@ -1057,6 +1084,143 @@
     <origin xyz="${distProbeToContactSurface_x} ${distProbeToContactSurface_y} ${distProbeToContactSurface_z}"
             rpy="0 ${angProbeToContactSurface} 0"/>
   </joint>
+
+
+  <!-- =====================================================================
+       9b. FRONT FORK AND THE PANEL STACK IT CARRIES
+
+       The machine does not pick modules off the ground. It carries a STACK of
+       them on a forklift-style carriage on the front of the undercarriage, drives
+       along the row, and lifts ONE module off its own fork with the four suction
+       cups on the tool. That is what every dist*Fork* and LenPL* row in the
+       parameter sheet is describing, and it is why the sheet has a "포크리프트"
+       block at all.
+
+       WHICH COLUMN THESE COME FROM. The 2.1 m US#1 column records 0 for
+       distUcToForkBack and distForkBackToPanelTop. Zero there means NOT MEASURED,
+       not "no fork". The machine plainly has one. So the fork is built from the
+       "ECR88 기장" column, which carries real numbers, even when the selected
+       variant is the 2.1 m one. Flagged rather than hidden: if the 2.1 m machine's
+       fork really does sit somewhere else, this is the block to fix.
+
+       The sheet also marks several of these rows Delete. That marking governs what
+       goes into the TABLET's kinematic dataset, not what the machine physically
+       has; the fork is drawn here as geometry and drives nothing.
+
+       Pallet base tilts by AlphaPL2 (15.7 deg) and the backrest by AlphaPL1
+       (74.5 deg), both straight from the sheet's protractor readings, so the stack
+       leans back the way it does on the real carriage.
+       ===================================================================== -->
+  <xacro:if value="$(arg model_fork)">
+    <link name="fork_link">
+      <xacro:inertial_box mass="${m_fork}"
+                          x="${geo_fork_len}" y="${LenPLWidth}" z="${geo_fork_t}"
+                          xyz="${geo_fork_len * half} 0 0"/>
+      <!-- pallet base, tilted back by AlphaPL2 -->
+      <xacro:viscol name="fork_link" material="xpanner_dark"
+                    xyz="${geo_fork_len * half} 0 0" rpy="0 ${-AlphaPL2} 0">
+        <box size="${geo_fork_len} ${LenPLWidth} ${geo_fork_t}"/>
+      </xacro:viscol>
+      <!-- backrest the stack leans on, tilted by AlphaPL1 -->
+      <xacro:detail material="xpanner_dark"
+                    xyz="0 0 ${geo_fork_back_h * half}" rpy="0 ${half_pi - AlphaPL1} 0">
+        <box size="${geo_fork_back_h} ${LenPLWidth} ${geo_fork_t}"/>
+      </xacro:detail>
+    </link>
+    <joint name="fork_joint" type="fixed">
+      <parent link="base_link"/>
+      <child  link="fork_link"/>
+      <!-- X IS NOT LenPLX. Taken literally, LenPLX = 1.086 puts the carriage inside
+           the machine: the house box reaches x = +1.14 and the undercarriage +1.41,
+           so a 1.25 m mast at x = 1.086 rises straight through the house. It showed up
+           as cam_fork_mast being occluded by house_link on every pose of the cycle.
+           LenPLX is evidently measured to some other fork reference, not to the
+           carriage root. Until that is pinned down, the carriage is placed clear of
+           the undercarriage front, which is where a forklift carriage physically is.
+           Y and Z ARE the sheet's (LenPLY, LenPLZ); only X is overridden. -->
+      <origin xyz="${lenBottomX * half + geo_fork_clear} ${LenPLY} ${LenPLZ}" rpy="0 0 0"/>
+    </joint>
+
+    <!-- The stack itself. Modules lie flat on the tilted pallet, one on top of the
+         next; the tool takes them off the top. Count is a scene choice, not data. -->
+    <link name="panel_stack_link">
+      <xacro:inertial_box mass="${m_panel * n_panels}"
+                          x="${LenPanelHeight}" y="${LenPLWidth}" z="${n_panels * geo_panel_t}"
+                          xyz="0 0 ${n_panels * geo_panel_t * half}"/>
+      <xacro:viscol name="panel_stack_link" material="xpanner_panel"
+                    xyz="0 0 ${n_panels * geo_panel_t * half}">
+        <box size="${LenPanelHeight} ${LenPLWidth} ${n_panels * geo_panel_t}"/>
+      </xacro:viscol>
+    </link>
+    <joint name="panel_stack_joint" type="fixed">
+      <parent link="fork_link"/>
+      <child  link="panel_stack_link"/>
+      <origin xyz="${geo_fork_len * half} 0 ${geo_fork_t * half}" rpy="0 ${-AlphaPL2} 0"/>
+    </joint>
+  </xacro:if>
+
+
+  <!-- =====================================================================
+       9c. CANDIDATE SENSOR MOUNTS
+
+       Zero-mass frames, nothing else. They exist so the camera argument can be had
+       in numbers instead of adjectives: scripts/camera_study.py walks the work cycle
+       and reports, for each of these, whether the pick point on the fork, the suction
+       cups, and the placement point on the row are inside the field of view and not
+       hidden behind the machine's own structure.
+
+       Add or move one and re-run the study; do not argue about it in a meeting.
+       Each frame's +X is the optical axis, +Z up, matching the usual camera
+       convention for a sensor prim in Isaac.
+       ===================================================================== -->
+  <xacro:if value="$(arg model_sensor_mounts)">
+    <xacro:macro name="cam_mount" params="name parent xyz rpy">
+      <link name="${name}">
+        <xacro:inertial_sphere mass="${m_marker}" radius="${geo_marker_r}"/>
+        <xacro:detail_visual material="xpanner_frame">
+          <sphere radius="${geo_marker_r}"/>
+        </xacro:detail_visual>
+      </link>
+      <joint name="${name}_joint" type="fixed">
+        <parent link="${parent}"/>
+        <child  link="${name}"/>
+        <origin xyz="${xyz}" rpy="${rpy}"/>
+      </joint>
+    </xacro:macro>
+
+    <!-- Cab roof, front edge, looking forward and down. The operator's own viewpoint. -->
+    <xacro:cam_mount name="cam_cab_roof" parent="house_link"
+                     xyz="${lenUppX * half - 0.10} ${lenUppY * half - 0.50} ${lenUppZ1 + geo_house_h - 0.05}"
+                     rpy="0 ${pi/180*25} 0"/>
+    <!-- House front deck, beside the boom foot, on the boom's own side (-Y). -->
+    <xacro:cam_mount name="cam_house_front" parent="house_link"
+                     xyz="${lenUppX * half - 0.15} ${-0.55} ${lenUppZ1 + geo_deck_h + 0.10}"
+                     rpy="0 ${pi/180*20} 0"/>
+    <!-- Mid boom, outboard side, aimed along the boom at the tool. -->
+    <xacro:cam_mount name="cam_boom_mid" parent="boom_link"
+                     xyz="${(lenBm1 + lenBm2) * geo_boom_apex_frac} ${-(geo_boom_sec_w * half + 0.08)} ${geo_boom_rise * 0.6}"
+                     rpy="0 ${pi/180*35} 0"/>
+    <!-- Arm, just behind the bucket pin, looking at the tool. The closest a fixed
+         mount gets to the work without riding the tool itself. -->
+    <xacro:cam_mount name="cam_arm_tip" parent="arm_link"
+                     xyz="${lenArm - 0.35} ${-(geo_arm_sec_w * half + 0.06)} ${geo_arm_sec_h * half + 0.05}"
+                     rpy="0 ${pi/180*55} 0"/>
+    <!-- On the tool, above the cups, looking straight down the suction axis. -->
+    <xacro:cam_mount name="cam_tool" parent="attachment_link"
+                     xyz="0.0 0.0 -0.10" rpy="0 ${half_pi} 0"/>
+    <!-- On the rotator, offset sideways and angled in, so it sees the cups and the
+         module edge rather than looking straight down the suction axis. cam_tool
+         scored 0 % on the TCP for exactly that reason: a camera on the tool axis
+         cannot see its own contact patch. This is the variant that can. -->
+    <xacro:cam_mount name="cam_tool_side" parent="rotator_link"
+                     xyz="0.0 ${-(geo_tr_r + 0.22)} -0.15"
+                     rpy="${-pi/180*55} ${pi/180*60} 0"/>
+    <!-- On the fork backrest, looking back at the top of the stack. Sees the pick
+         point without depending on where the boom happens to be. -->
+    <xacro:cam_mount name="cam_fork_mast" parent="fork_link"
+                     xyz="0.0 ${LenPLWidth * half - 0.10} ${geo_fork_back_h}"
+                     rpy="0 ${pi/180*45} 0"/>
+  </xacro:if>
 
   <!-- =====================================================================
        10. ros2_control
