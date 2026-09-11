@@ -312,6 +312,24 @@
     </xacro:unless>
   </xacro:macro>
 
+  <!-- Visual ONLY: no <collision>. For cosmetic dressing that necessarily overlaps the
+       structure it is bolted to. A hydraulic cylinder barrel runs right along the boom
+       it drives, so giving it a collider means shipping two solids that interpenetrate
+       by design; the solver then spends every step trying to push them apart and the
+       articulation comes apart. That is exactly what happened when the cylinders were
+       first added with the collision-bearing `detail` macro.
+       Like `detail`, it vanishes when real meshes are switched on. -->
+  <xacro:macro name="detail_visual"
+               params="material:='xpanner_yellow' xyz:='0 0 0' rpy:='0 0 0' *prim">
+    <xacro:unless value="$(arg use_meshes)">
+      <visual>
+        <origin xyz="${xyz}" rpy="${rpy}"/>
+        <geometry><xacro:insert_block name="prim"/></geometry>
+        <material name="${material}"/>
+      </visual>
+    </xacro:unless>
+  </xacro:macro>
+
   <!-- A structural member drawn as a capsule-ish cylinder running from the link origin
        to the offset (dx,dy,dz). Length and pitch are DERIVED from the offset, so the
        visual can never disagree with the kinematics. Y-planar members only (dy ignored
@@ -727,15 +745,15 @@
        ===================================================================== -->
   <xacro:macro name="hyd_cylinder"
                params="name parent driver anchor_xyz phi_mult phi_off d_mult d_off
-                       len_min bore rod d_lo d_hi">
+                       len_min bore rod d_lo d_hi m_barrel m_rod">
     <link name="${name}_barrel">
-      <xacro:inertial_cylinder mass="${m_cyl_token}" radius="${bore * half + cyl_wall}"
+      <xacro:inertial_cylinder mass="${m_barrel}" radius="${bore * half + cyl_wall}"
                                length="${len_min * cyl_barrel_frac}"
                                xyz="${len_min * cyl_barrel_frac * half} 0 0" rpy="0 ${half_pi} 0"/>
-      <xacro:detail material="xpanner_steel"
+      <xacro:detail_visual material="xpanner_steel"
                     xyz="${len_min * cyl_barrel_frac * half} 0 0" rpy="0 ${half_pi} 0">
         <cylinder radius="${bore * half + cyl_wall}" length="${len_min * cyl_barrel_frac}"/>
-      </xacro:detail>
+      </xacro:detail_visual>
     </link>
     <joint name="${name}_pitch" type="revolute">
       <parent link="${parent}"/>
@@ -752,12 +770,12 @@
     </joint>
 
     <link name="${name}_rod">
-      <xacro:inertial_cylinder mass="${m_cyl_token}" radius="${rod * half}" length="${len_min}"
+      <xacro:inertial_cylinder mass="${m_rod}" radius="${rod * half}" length="${len_min}"
                                xyz="${len_min * half} 0 0" rpy="0 ${half_pi} 0"/>
-      <xacro:detail material="xpanner_accent"
+      <xacro:detail_visual material="xpanner_accent"
                     xyz="${len_min * half} 0 0" rpy="0 ${half_pi} 0">
         <cylinder radius="${rod * half}" length="${len_min}"/>
-      </xacro:detail>
+      </xacro:detail_visual>
     </link>
     <joint name="${name}_extend" type="prismatic">
       <parent link="${name}_barrel"/>
@@ -782,7 +800,8 @@
                         phi_mult="${cyl_boom_phi_mult}" phi_off="${cyl_boom_phi_off}"
                         d_mult="${cyl_boom_d_mult}"     d_off="${cyl_boom_d_off}"
                         len_min="${cyl_boom_len_min}" bore="${cyl_boom_bore}" rod="${cyl_boom_rod}"
-                        d_lo="-0.05" d_hi="0.15"/>
+                        d_lo="-0.05" d_hi="0.15"
+                        m_barrel="${m_cyl_boom_barrel}" m_rod="${m_cyl_boom_rod}"/>
     <!-- ARM cylinder. Parent pin distCylLrgArm is emitted on the BOOM TIP per T8, so the
          anchor below carries the lenBm1 + lenBm2 offset. The arm-side pin is the scalar
          lenToCylSmlArm assumed on the arm centreline - that assumption is why this one is
@@ -792,7 +811,8 @@
                         phi_mult="${cyl_arm_phi_mult}" phi_off="${cyl_arm_phi_off}"
                         d_mult="${cyl_arm_d_mult}"     d_off="${cyl_arm_d_off}"
                         len_min="${cyl_arm_len_min}" bore="${cyl_arm_bore}" rod="${cyl_arm_rod}"
-                        d_lo="0.0" d_hi="0.90"/>
+                        d_lo="0.0" d_hi="0.90"
+                        m_barrel="${m_cyl_arm_barrel}" m_rod="${m_cyl_arm_rod}"/>
   </xacro:if>
 
   <link name="ground_link">

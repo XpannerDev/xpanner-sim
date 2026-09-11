@@ -752,6 +752,96 @@ def apply_rest_pose(usd_file: Path, explicit: dict) -> None:
     print(f"[rest] applied to {applied} joints" + (f"  ({named})" if named else ""))
 
 
+def neutralise_mimic_drives(usd_file: Path) -> None:
+    """
+    Strip the position drive from every mimic-slaved joint.
+
+    The importer applies PhysicsDriveAPI to EVERY movable joint, mimic-slaved ones
+    included. That leaves two controllers on one axis: NewtonMimicAPI constraining it
+    to its driver, and a stiff position drive pulling it at whatever target happens to
+    be authored. They fight, and the joint oscillates.
+
+    On this asset it was worse than a fight. The importer gave cyl_arm_extend a linear
+    drive stiffness of 1e7 N/m and the cylinder links carried a 0.5 kg token mass, so
+    the drive's natural frequency was sqrt(1e7/0.5) = 4472 rad/s ~ 712 Hz against a
+    60 Hz step. That does not oscillate, it explodes -- which is exactly how it looked
+    in the viewer.
+
+    A mimic joint wants to be CONSTRAINED, not driven, so zero the gains and leave the
+    constraint to do its job. maxForce is left alone: it is the constraint's headroom,
+    not the drive's.
+    """
+    from pxr import Usd, UsdPhysics
+
+    stage = Usd.Stage.Open(str(usd_file))
+    if stage is None:
+        print(f"[mimic] could not open {usd_file}")
+        return
+    n = 0
+    for prim in stage.Traverse():
+        if not (prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint)):
+            continue
+        rel = prim.GetRelationship("newton:mimicJoint")
+        if not (rel and rel.GetTargets()):
+            continue
+        for axis in ("angular", "linear"):
+            for gain in ("stiffness", "damping"):
+                a = prim.GetAttribute(f"drive:{axis}:physics:{gain}")
+                if a and a.HasAuthoredValue():
+                    a.Set(0.0)
+        n += 1
+    if n:
+        stage.GetRootLayer().Save()
+    print(f"[mimic] position drive neutralised on {n} mimic-slaved joint(s)")
+
+
+def tune_drive_damping(usd_file: Path, ratio: float) -> None:
+    """
+    Raise the position-drive damping on every ACTUATED joint.
+
+    The importer authors stiffness 174 533 with damping 50. For a robot arm that is
+    fine; for a nine-tonne excavator it is not. Effective inertia about boom_joint is
+    order 8 000 kg.m^2 (boom + arm + tool at ~2.5 m), so critical damping is
+    2*sqrt(k*I) = 2*sqrt(174533*8000) ~ 75 000. At 50 the drive is underdamped by
+    three orders of magnitude: the machine cannot hold the pose it was opened in, and
+    every joint drifts and rings. That was visible long before the hydraulic cylinders
+    were added -- the cylinders only made it obvious.
+
+    damping = ratio * stiffness with ratio 0.4 lands at 69 813 here, within 8 % of the
+    computed critical value, and does not need a per-joint inertia estimate to be
+    right. It is a TUNING DEFAULT, not a measurement: pass --drive-damping-ratio to
+    change it, or 0 to leave the importer's values alone.
+
+    Mimic-slaved joints are skipped: their gains were already zeroed on purpose, and
+    re-damping them would put a second controller back on a constrained axis.
+    """
+    if ratio <= 0.0:
+        print("[drive] damping left as imported")
+        return
+    from pxr import Usd, UsdPhysics
+
+    stage = Usd.Stage.Open(str(usd_file))
+    if stage is None:
+        print(f"[drive] could not open {usd_file}")
+        return
+    n = 0
+    for prim in stage.Traverse():
+        if not (prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint)):
+            continue
+        rel = prim.GetRelationship("newton:mimicJoint")
+        if rel and rel.GetTargets():
+            continue
+        for axis in ("angular", "linear"):
+            k = prim.GetAttribute(f"drive:{axis}:physics:stiffness")
+            d = prim.GetAttribute(f"drive:{axis}:physics:damping")
+            if k and k.HasAuthoredValue() and d and d.HasAuthoredValue():
+                d.Set(float(k.Get()) * ratio)
+                n += 1
+    if n:
+        stage.GetRootLayer().Save()
+    print(f"[drive] damping set to {ratio:g} x stiffness on {n} actuated axis/axes")
+
+
 # --------------------------------------------------------------------------- #
 # 5.  Post-import report
 # --------------------------------------------------------------------------- #
@@ -839,6 +929,10 @@ def parse_args(argv=None):
     p.add_argument("--no-merge-fixed-joints", dest="merge_fixed_joints",
                    action="store_false", help=argparse.SUPPRESS)
 
+    p.add_argument("--drive-damping-ratio", type=float, default=0.4,
+                   help="position-drive damping as a multiple of stiffness on actuated "
+                        "joints (default 0.4, ~critical for this machine; 0 = leave as "
+                        "imported, which is badly underdamped for a 9 t excavator)")
     p.add_argument("--rest-pose", metavar="J=VAL", action="append", default=[],
                    help="opening joint value, degrees for revolute / metres for prismatic, "
                         "e.g. --rest-pose boom_joint=-30 --rest-pose arm_joint=110. "
@@ -1000,6 +1094,8 @@ def main(argv=None) -> int:
                 explicit[k.strip()] = float(v)
             apply_rest_pose(output, explicit)
 
+        neutralise_mimic_drives(output)
+        tune_drive_damping(output, args.drive_damping_ratio)
         report_articulation(output)
 
     except XacroError as exc:

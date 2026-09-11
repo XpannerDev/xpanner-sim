@@ -100,8 +100,8 @@
        the same links sum to 9 149 kg. See audit document section 3.3.
        ============================================================================ -->
   <xacro:property name="m_base"        value="2713.0"/>  <!-- CLASS-TYPICAL [L8]  undercarriage INCLUDING both tracks, blade, final drives = 0.31 x 8752 kg operating weight. 0.31 is the middle of the published 28-34 % class band, nudged low because this reduced tail swing design loads the house. See H2. -->
-  <xacro:property name="m_house"       value="4966.0"/>  <!-- DERIVED (RESIDUAL) [L9]  8752 minus base, boom, arm assy, bucket, operator. Every error in m_base lands here one for one: this is the largest single uncertainty in the model. Includes the 1 400 kg published counterweight. -->
-  <xacro:property name="m_boom"        value="530.0"/>   <!-- PUBLISHED [L2]  Volvo component table, 3.55 m mono boom, "includes cylinder, piping and pin, excludes boom cyl. pin". Taken whole because the URDF models no cylinder links. -->
+  <xacro:property name="m_house"       value="${4966.0 - m_cyl_boom_total}"/>  <!-- DERIVED (RESIDUAL) [L9]  8752 minus base, boom, arm assy, bucket, operator, then minus the boom cylinder now modelled as its own links (it was inside this residual). Every error in m_base lands here one for one: this is the largest single uncertainty in the model. Includes the 1 400 kg published counterweight. -->
+  <xacro:property name="m_boom"        value="${530.0 - m_cyl_arm_total}"/>   <!-- PUBLISHED [L2]  Volvo component table, 3.55 m mono boom, "includes cylinder, piping and pin, excludes boom cyl. pin". The dipper arm cylinder Volvo counts in that 530 kg is now its own pair of links, so it is carved out here rather than counted twice. -->
   <xacro:property name="m_arm"         value="301.0"/>   <!-- DERIVED from PUBLISHED [L10]  2.1 m dipper. Published 340 kg arm assembly ("includes cylinder, linkage and pin") minus the carved out 4 bar: 340 - 22 - 16 - 1 = 301. The bucket cylinder stays inside this figure. For the 1.7 m arm the published assembly is 280 kg and this becomes 241. Volvo publishes both rows; Teo highlighted 2.1 m as the fleet spec (2026-09-11). -->
   <xacro:property name="m_inp_link"    value="22.0"/>    <!-- CLASS-TYPICAL [L11]  power link, pair of 0.42 m plates approx 20 x 140 mm section plus bosses. -->
   <xacro:property name="m_conn_rod"    value="16.0"/>    <!-- CLASS-TYPICAL [L12]  0.40 m idler link, lighter section than the power link. -->
@@ -369,13 +369,26 @@
   <!-- Barrel outer radius = bore/2 plus a wall; rod radius is the published rod/2. -->
   <xacro:property name="cyl_wall"          value="0.010"/>      <!-- ASSUMPTION  m, cosmetic -->
   <xacro:property name="cyl_barrel_frac"   value="0.62"/>       <!-- ASSUMPTION  barrel length as a fraction of len_min -->
-  <!-- Token mass. The REAL cylinder mass is already inside the published link masses:
-       Volvo's 530 kg boom figure is stated to include the dipper arm cylinder, piping
-       and pin. Giving these links their true ~80/60 kg would double-count it. They
-       therefore carry a token mass and MUST NOT be used for dynamics; switch
-       model_cylinders:=false for any run where that matters. Total machine mass moves
-       9 149.1 -> 9 151.1 kg (+0.02 %). -->
-  <xacro:property name="m_cyl_token"       value="0.5"/>        <!-- GUESS, TOKEN -->
+  <!-- CYLINDER MASS. The first pass gave these links a 0.5 kg token, reasoning that
+       the real mass is already inside the published figures. That was right about the
+       accounting and badly wrong about the physics: a 0.5 kg body under the drive
+       stiffness the importer applies is numerically unstable, and the arm cylinder
+       visibly exploded in the viewer. Mass ratios matter even for cosmetic links.
+
+       So give them realistic masses and CARVE THEM OUT of the links that already
+       contain them, which keeps the 9 149.1 kg reconciliation exact:
+         arm cylinder  60 kg  <- out of m_boom. Volvo states the 530 kg boom figure
+                                 "includes dipper arm cylinder, piping and pin".
+         boom cylinder 80 kg  <- out of m_house, which is the residual and therefore
+                                 where anything not itemised currently sits.
+       Split barrel/rod roughly 70/30, the barrel carrying the tube and both end caps.
+       CLASS-TYPICAL: no cylinder weight is published for this machine. -->
+  <xacro:property name="m_cyl_boom_total"  value="80.0"/>       <!-- CLASS-TYPICAL  105 mm bore, ~1.33 m -->
+  <xacro:property name="m_cyl_arm_total"   value="60.0"/>       <!-- CLASS-TYPICAL   90 mm bore, ~1.61 m -->
+  <xacro:property name="m_cyl_boom_barrel" value="${m_cyl_boom_total * 0.70}"/>  <!-- DERIVED -->
+  <xacro:property name="m_cyl_boom_rod"    value="${m_cyl_boom_total * 0.30}"/>  <!-- DERIVED -->
+  <xacro:property name="m_cyl_arm_barrel"  value="${m_cyl_arm_total * 0.70}"/>   <!-- DERIVED -->
+  <xacro:property name="m_cyl_arm_rod"     value="${m_cyl_arm_total * 0.30}"/>   <!-- DERIVED -->
 
   <xacro:property name="eff_swing"    value="22900.0"/>   <!-- PUBLISHED [L56]  Volvo max swing torque 22.9 kN.m. ECR88D ONLY: the ECR88 Plus publishes no swing torque at all, so do not carry this across. -->
   <xacro:property name="eff_boom"     value="${cyl_relief_pa * pi / 4 * cyl_boom_bore * cyl_boom_bore * 0.4763}"/>
