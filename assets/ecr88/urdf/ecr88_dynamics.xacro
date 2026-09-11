@@ -249,8 +249,28 @@
 
   <!-- Passive 4 bar dressing branch. The URDF cut is at the conn rod / output link pin,
        so this branch is VISUAL ONLY and carries no load. Wide placeholders. -->
-  <xacro:property name="lim_inp_link_lower" value="${deg * -170.00}"/> <!-- GUESS  unconstrained placeholder, dressing branch. -->
-  <xacro:property name="lim_inp_link_upper" value="${deg *  -20.00}"/> <!-- GUESS  unconstrained placeholder, dressing branch. -->
+  <!-- input_link_joint CARRIES A MIMIC ON bucket_joint. A mimic says the two joints
+       are the same degree of freedom up to multiplier and offset, so their LIMITS must
+       be the same interval mapped through that same relation. These used to be a
+       free-hand GUESS of [-170, -20] against a bucket range of [-126, +43], i.e. the
+       mimic demanded angles the limit forbade over most of the bucket's travel.
+
+       That is not a cosmetic mismatch. Two hard constraints pulling against each other
+       inject large forces into the chain, and those forces do not stay in the dressing
+       branch: they loaded the whole front end. Measured at the rest pose, with the
+       4-bar present the machine settled 11.8 / 14.0 / 36.2 deg away from its commanded
+       boom / arm / bucket angles; with the 4-bar dropped, the same pose held to
+       0.33 / 0.07 / 0.02 deg. That drift was read as "the drives are too weak" and then
+       as "the cylinders are exploding", and it was neither. Analytic gravity torque
+       at this pose is 36.8 kN.m on a boom with 121.3 kN.m of effort, a 3.3x margin.
+
+       With the placeholder multiplier 1.0 / offset 0.0 the mapping is the identity, so
+       the limits are simply the bucket's. WHEN THE REAL 4-BAR COEFFICIENTS ARE FITTED,
+       THESE MUST BE MAPPED THROUGH THEM TOO, or the same fight comes back. -->
+  <xacro:property name="lim_inp_link_lower" value="${bkt_mimic_mult * lim_bucket_lower + bkt_mimic_off}"/>
+                                         <!-- DERIVED from lim_bucket_* through the mimic -->
+  <xacro:property name="lim_inp_link_upper" value="${bkt_mimic_mult * lim_bucket_upper + bkt_mimic_off}"/>
+                                         <!-- DERIVED from lim_bucket_* through the mimic -->
   <xacro:property name="lim_conn_rod_lower" value="${-pi}"/>           <!-- GUESS  the cut member: free by construction. -->
   <xacro:property name="lim_conn_rod_upper" value="${ pi}"/>           <!-- GUESS  the cut member: free by construction. -->
 

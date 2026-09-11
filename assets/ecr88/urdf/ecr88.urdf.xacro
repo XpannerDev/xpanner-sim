@@ -204,6 +204,13 @@
        Cosmetic: token mass, no actuation, real mass already inside m_boom.
        Set false for any physics run where four extra slaved bodies are unwanted. -->
   <xacro:arg name="model_cylinders"     default="true"/>
+  <!-- The ARM cylinder is switchable on its own because it, alone, destabilises the
+       articulation: with only the arm cylinder present the arm settles 90.9 deg away
+       from its commanded angle, while the boom cylinder costs 2.6 deg and the 4-bar
+       costs 0.05 deg. Isolated by building the three branches separately and measuring
+       each. Default OFF until that is understood; the boom cylinder is the visible one
+       anyway. -->
+  <xacro:arg name="model_arm_cylinder"  default="false"/>
   <xacro:arg name="mesh_package"        default="xpanner_sim"/>
   <xacro:arg name="mesh_dir"            default="assets/ecr88/meshes"/>
   <xacro:arg name="mesh_visual_ext"     default="dae"/>
@@ -806,6 +813,7 @@
          anchor below carries the lenBm1 + lenBm2 offset. The arm-side pin is the scalar
          lenToCylSmlArm assumed on the arm centreline - that assumption is why this one is
          only honest to 109 mm. See ecr88_dynamics.xacro. -->
+    <xacro:if value="$(arg model_arm_cylinder)">
     <xacro:hyd_cylinder name="cyl_arm" parent="boom_link" driver="arm_joint"
                         anchor_xyz="${lenBm1 + lenBm2 + distCylLrgArm_x} ${distCylLrgArm_y} ${distCylLrgArm_z}"
                         phi_mult="${cyl_arm_phi_mult}" phi_off="${cyl_arm_phi_off}"
@@ -813,6 +821,7 @@
                         len_min="${cyl_arm_len_min}" bore="${cyl_arm_bore}" rod="${cyl_arm_rod}"
                         d_lo="0.0" d_hi="0.90"
                         m_barrel="${m_cyl_arm_barrel}" m_rod="${m_cyl_arm_rod}"/>
+    </xacro:if>
   </xacro:if>
 
   <link name="ground_link">

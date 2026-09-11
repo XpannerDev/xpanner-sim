@@ -818,6 +818,7 @@ def tune_drive_damping(usd_file: Path, ratio: float) -> None:
     if ratio <= 0.0:
         print("[drive] damping left as imported")
         return
+    import math as _m
     from pxr import Usd, UsdPhysics
 
     stage = Usd.Stage.Open(str(usd_file))
@@ -834,12 +835,26 @@ def tune_drive_damping(usd_file: Path, ratio: float) -> None:
         for axis in ("angular", "linear"):
             k = prim.GetAttribute(f"drive:{axis}:physics:stiffness")
             d = prim.GetAttribute(f"drive:{axis}:physics:damping")
-            if k and k.HasAuthoredValue() and d and d.HasAuthoredValue():
-                d.Set(float(k.Get()) * ratio)
-                n += 1
+            t = prim.GetAttribute(f"drive:{axis}:physics:type")
+            if not (k and k.HasAuthoredValue() and d and d.HasAuthoredValue()):
+                continue
+            kv = float(k.Get())
+            mode = t.Get() if t and t.HasAuthoredValue() else "force"
+            if mode == "acceleration":
+                # ACCELERATION drives divide the gains by the joint's own inertia, so
+                # the second-order system is qdd = k*e - d*qd with NO mass term. Critical
+                # damping is 2*sqrt(k), independent of how heavy the machine is -- which
+                # is the whole point of the mode. Using the force-mode rule here
+                # (0.4*k = 69 813 against a critical 835) overdamps by ~84x and the
+                # machine crawls to its target instead of holding it.
+                d.Set(2.0 * _m.sqrt(kv))
+            else:
+                d.Set(kv * ratio)
+            n += 1
     if n:
         stage.GetRootLayer().Save()
-    print(f"[drive] damping set to {ratio:g} x stiffness on {n} actuated axis/axes")
+    print(f"[drive] damping tuned on {n} actuated axis/axes "
+          f"(force mode: {ratio:g} x stiffness; acceleration mode: 2*sqrt(stiffness))")
 
 
 # --------------------------------------------------------------------------- #
@@ -929,6 +944,13 @@ def parse_args(argv=None):
     p.add_argument("--no-merge-fixed-joints", dest="merge_fixed_joints",
                    action="store_false", help=argparse.SUPPRESS)
 
+    p.add_argument("--keep-mimic-drives", dest="neutralise_mimic", action="store_false",
+                   help="leave the importer's position drive on mimic-slaved joints. "
+                        "Default is to strip it, because a drive and a mimic on the same "
+                        "axis are two controllers; but a mimic-only joint has nothing "
+                        "holding it against gravity, so which is right depends on how "
+                        "much mass hangs off the slaved branch.")
+    p.set_defaults(neutralise_mimic=True)
     p.add_argument("--drive-damping-ratio", type=float, default=0.4,
                    help="position-drive damping as a multiple of stiffness on actuated "
                         "joints (default 0.4, ~critical for this machine; 0 = leave as "
@@ -1094,7 +1116,8 @@ def main(argv=None) -> int:
                 explicit[k.strip()] = float(v)
             apply_rest_pose(output, explicit)
 
-        neutralise_mimic_drives(output)
+        if args.neutralise_mimic:
+            neutralise_mimic_drives(output)
         tune_drive_damping(output, args.drive_damping_ratio)
         report_articulation(output)
 
