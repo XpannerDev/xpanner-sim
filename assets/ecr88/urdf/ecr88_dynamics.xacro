@@ -461,6 +461,13 @@
   <xacro:property name="vel_conn_rod" value="${vel_bucket}"/> <!-- ALIAS  driven branch of the same 4 bar. -->
   <xacro:property name="vel_outp_link" value="${vel_bucket}"/> <!-- ALIAS  same joint as bucket_joint. -->
   <xacro:property name="eff_dozer"    value="${cyl_relief_pa * pi / 4 * cyl_blade_bore * cyl_blade_bore * 0.55}"/> <!-- DERIVED  the blade cylinder pushes 390.2 kN and acts on roughly a 0.55 m moment arm about the blade pivot. Generous, and deliberately so: the blade's job in the calibration procedure is to jack the front of an 8.75 t machine off the ground, so an under-powered blade would silently fail the Pitch > 5 gate. -->
+  <xacro:property name="vel_bm_swing" value="0.3"/>       <!-- CLASS-TYPICAL  no firmware table exists: boom swing has no entry in reqSpdToActCmd and no autoCtrlEna flag, because it is not an auto-controlled axis. Manual pedal only. -->
+  <xacro:property name="eff_bm_swing" value="30000.0"/>   <!-- CLASS-TYPICAL, NO SOURCE  the offset ram's bore is not in the parts data we have. It only has to swing the front end, not dig with it. -->
+  <!-- Boom offset range, PUBLISHED: Q = 70 deg left, R = 60 deg right (product guide /
+       mateco EU guide), giving offsets O = 760 and P = 860 mm. Recorded in
+       resources/ECR88_estimated_dynamics.md section 1.1. +Z is left. -->
+  <xacro:property name="lim_bm_swing_lower" value="${-pi/180*60}"/>
+  <xacro:property name="lim_bm_swing_upper" value="${ pi/180*70}"/>
   <xacro:property name="vel_dozer"    value="0.5"/>       <!-- GUESS  the blade table is a passthrough (X = Y = [0, 0.001, 80]), i.e. the blade is NOT speed calibrated: it is commanded open loop. No firmware speed exists to take. -->
 
   <!-- ============================================================================

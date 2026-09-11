@@ -612,10 +612,38 @@
       <sphere radius="${geo_marker_r}"/>
     </xacro:viscol>
   </link>
-  <joint name="boom_mount_joint" type="fixed">
+  <!-- BOOM SWING (boom offset). Was welded shut here; corrected 2026-09-11.
+
+       ECR88D_LongArm.m and ECR88D_ShortArm.m both set hasBmSwing = true, and the
+       published product guide gives the range: Q = 70 deg left, R = 60 deg right.
+       The machine has this axis and MACH_POST_01P has a JntAngBoomSwing signal for it.
+
+       BUT THE FIRMWARE PINS IT TO ZERO, AND THAT IS WORTH KNOWING.
+         SysPar.m:72   JntAng_BmSwing = single(0*pi/180);
+       is the ONLY JntAng_ constant in the whole file, sitting under "Kinematic
+       parameters". Every other joint angle in this machine is a difference of two IMU
+       attitudes; this one is a literal. And the reason is structural, not an oversight:
+       there is no IMU on the swing post (the six are chs, bm1, bm2, arm, link, tilt),
+       there is no bmSwing entry in reqSpdToActCmd, and there is no autoCtrlEnaBmSwing
+       among the seven auto-control flags. The axis is manual-pedal only and unsensed.
+
+       So the firmware CANNOT TELL if somebody offsets the boom, and it will keep
+       computing the tool position as though the boom were centred. At full offset that
+       is 860 mm of error (published P), against a placement tolerance of 20 mm.
+
+       That is exactly the kind of thing the simulation exists to show, so the joint is
+       real here rather than welded: a SIL run can offset the boom and watch the
+       firmware's idea of where the tool is walk away from where it is. Rest pose is
+       zero, which is the configuration the firmware assumes and the one the machine
+       works panels in. -->
+  <joint name="boom_swing_joint" type="revolute">
     <parent link="house_link"/>
     <child  link="boom_mount_link"/>
     <origin xyz="${distChsToBmMnt_x} ${distChsToBmMnt_y} ${distChsToBmMnt_z}" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="${lim_bm_swing_lower}" upper="${lim_bm_swing_upper}"
+           effort="${eff_bm_swing}" velocity="${vel_bm_swing}"/>
+    <dynamics damping="${dyn_damping}" friction="${dyn_friction}"/>
   </joint>
 
   <!-- Boom cylinder LARGE (cap/base) end pin, on the boom mount.
@@ -1396,6 +1424,7 @@
       <xacro:ecr88_ros2_control_joint name="bucket_joint"/>
       <xacro:ecr88_ros2_control_joint name="tilt_joint"/>
       <xacro:ecr88_ros2_control_joint name="rotator_joint"/>
+      <xacro:ecr88_ros2_control_joint name="boom_swing_joint"/>
       <xacro:ecr88_ros2_control_joint name="dozer_joint"/>
     </ros2_control>
   </xacro:if>
