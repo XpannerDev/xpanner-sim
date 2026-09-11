@@ -476,10 +476,13 @@ def _xml_wellformed_report(path: Path) -> str | None:
         ET.parse(path)
         return None
     except ET.ParseError as exc:
-        pass
+        # Python deletes the `as` name when the except block exits, so stash it
+        # before falling through to the reporting code below.
+        parse_error = exc
     except OSError as exc:
         return f"{path}: cannot read: {exc}"
 
+    exc = parse_error
     lineno, col = getattr(exc, "position", (0, 0))
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()

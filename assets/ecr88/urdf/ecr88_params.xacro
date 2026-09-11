@@ -606,9 +606,54 @@
   <xacro:property name="jntBoomSwingEffort"    value="30000.0"/>         <!-- ESTIMATE (T2) -->
   <xacro:property name="jntBoomSwingVelocity"  value="0.35"/>            <!-- ESTIMATE (T3) -->
 
-  <!-- Boom 1 pitch -->
-  <xacro:property name="jntBm1Lower"           value="${-pi/180*55}"/>   <!-- ESTIMATE (T1) -->
-  <xacro:property name="jntBm1Upper"           value="${ pi/180*45}"/>   <!-- ESTIMATE (T1) -->
+  <!-- ==================================================================
+       OEM-TEAM JOINT ANGLES.  Source: Olivia (Xpanner, ECR88 담당), 2026-09-11.
+       Quoted verbatim from the message:
+           "암 : 31~155도"
+           "붐 : -31(붐다운 바닥기준) ~ -69(최대)"
+       These are MACHINE-convention angles, not URDF joint angles. They outrank
+       every ESTIMATE below; tag = OEM-TEAM.
+       ================================================================== -->
+  <xacro:property name="oemArmAngleMin"        value="31.0"/>    <!-- OEM-TEAM [deg] -->
+  <xacro:property name="oemArmAngleMax"        value="155.0"/>   <!-- OEM-TEAM [deg] -->
+  <xacro:property name="oemBm1AngleGround"     value="-31.0"/>   <!-- OEM-TEAM [deg] "붐다운 바닥기준" -->
+  <xacro:property name="oemBm1AngleMaxTravel"  value="-69.0"/>   <!-- OEM-TEAM [deg] "최대" -->
+  <xacro:property name="oemBm1AngleSpan"       value="${oemBm1AngleGround - oemBm1AngleMaxTravel}"/>
+                                                                 <!-- DERIVED = 38 deg total travel
+                                                                      (xacro has no abs(); -31 - (-69) = +38) -->
+
+  <!-- Boom 1 pitch.
+       The OEM figures give the SPAN (38 deg) reliably, but not the zero reference,
+       so the span still has to be PLACED in URDF convention. It is placed by the
+       one physical statement in the message: "-31 = 붐다운 바닥기준", i.e. the
+       boom-down travel stop is the posture where the tool reaches the GROUND.
+
+       DERIVATION (scripts-free repro: expand this xacro, then sweep boom over the
+       OEM arm range and bisect for the first TCP contact with the ground plane):
+         ground plane, base_link frame = LenBottomZ1 = -1.445 m
+         sweep contact_surface_link Z over arm in [-149, -25] deg
+         first boom angle whose reachable Zmin touches the ground = +11.53 deg URDF
+         => boom-down stop  = +11.53 deg  (OEM -31)
+            boom-up stop    = +11.53 - 38 = -26.47 deg  (OEM -69)
+            machine->URDF offset = +42.53 deg
+       Sanity: in this URDF, NEGATIVE boom angle raises the tool, which is the same
+       sense as the OEM numbers (-69 "최대" is the raised end). That agreement is
+       what makes the placement credible rather than arbitrary.
+
+       Before this anchor the range was placed at [-31, +7] deg and the machine
+       COULD NOT REACH THE GROUND (TCP Zmin = -0.958 vs ground -1.445). That is how
+       the misplacement was caught. Keep the ground-contact check when these
+       numbers change.
+
+       *** STILL ASK OLIVIA: 이 각도의 0점과 (+)방향은? 수평 기준인가 실린더 기준인가? ***
+       An explicit zero reference replaces this derivation outright.
+       -->
+  <xacro:property name="bm1GroundContactUrdf"  value="11.53"/>
+                        <!-- DERIVED [deg] boom angle at first ground contact, see above -->
+  <xacro:property name="jntBm1Lower"           value="${pi/180*(bm1GroundContactUrdf - oemBm1AngleSpan)}"/>
+                        <!-- = -26.47 deg, boom fully UP.   OEM-TEAM span + DERIVED placement -->
+  <xacro:property name="jntBm1Upper"           value="${pi/180*bm1GroundContactUrdf}"/>
+                        <!-- = +11.53 deg, boom DOWN at ground. OEM-TEAM span + DERIVED placement -->
   <xacro:property name="jntBm1Effort"          value="60000.0"/>         <!-- ESTIMATE (T2) -->
   <xacro:property name="jntBm1Velocity"        value="0.5"/>             <!-- ESTIMATE (T3) -->
 
@@ -619,9 +664,19 @@
   <xacro:property name="jntBm2Effort"          value="0.0"/>
   <xacro:property name="jntBm2Velocity"        value="0.0"/>
 
-  <!-- Arm (stick) -->
-  <xacro:property name="jntArmLower"           value="${-pi/180*155}"/>  <!-- ESTIMATE (T1) -->
-  <xacro:property name="jntArmUpper"           value="${-pi/180*15}"/>   <!-- ESTIMATE (T1) -->
+  <!-- Arm (stick).
+       OEM gives the BOOM-ARM INTERIOR angle phi = 31..155 deg. The URDF arm_joint
+       is zero when the arm is collinear with the boom (origin (lenBm1,0,0), no rpy),
+       i.e. phi = 180 deg at theta = 0, and the arm curls in at negative theta:
+           theta = -(180 - phi)
+           phi = 155 (arm out)  ->  theta = -25 deg   -> upper stop
+           phi =  31 (arm in)   ->  theta = -149 deg  -> lower stop
+       The previous ESTIMATE was -155..-15 deg, i.e. the same convention but a
+       wider span; the OEM figures narrow it. -->
+  <xacro:property name="jntArmLower"           value="${-pi/180*(180 - oemArmAngleMin)}"/>
+                                        <!-- = -149 deg. OEM-TEAM via interior-angle conversion -->
+  <xacro:property name="jntArmUpper"           value="${-pi/180*(180 - oemArmAngleMax)}"/>
+                                        <!-- =  -25 deg. OEM-TEAM via interior-angle conversion -->
   <xacro:property name="jntArmEffort"          value="40000.0"/>         <!-- ESTIMATE (T2) -->
   <xacro:property name="jntArmVelocity"        value="0.6"/>             <!-- ESTIMATE (T3) -->
 
