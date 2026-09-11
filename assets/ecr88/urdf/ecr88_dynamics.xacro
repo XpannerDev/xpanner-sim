@@ -27,18 +27,23 @@
      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
      FIVE INTEGRATION HAZARDS. Read before including this file.
      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-     H1  NAME COLLISION. This file defines the same property names as sections [14][C] and
+     H1  [RESOLVED 2026-09-11] NAME COLLISION. This file used to define the same property
+         names as sections [14][C] and
          [15][C]/[E] of ecr88_params.xacro. Load exactly ONE of the two: xacro silently
          keeps the LAST definition, so loading both produces a working file with values
          nobody chose. Intended migration: delete those sections from ecr88_params.xacro
          and include this file instead, leaving that file purely geometric (which is what
          its own header says it wants to be).
-     H2  TRACK DOUBLE COUNT. m_base here is the WHOLE undercarriage including both tracks
+         DONE: the 48 duplicated properties and 16 dead legacy mass_* aliases were removed
+         from ecr88_params.xacro and this file is now included from ecr88.urdf.xacro.
+         Overlap between the two files is zero; nothing depends on last-definition-wins.
+     H2  [RESOLVED 2026-09-11] TRACK DOUBLE COUNT. m_base here is the WHOLE undercarriage including both tracks
          (2 713 kg), which is the decomposition the audit document's mass table uses.
          ecr88.urdf.xacro currently gives base_link m_base AND gives each of the two track
-         links m_track. Point base_link at m_base_frame (2 319 kg) instead, or the machine
-         gains 394 kg of phantom track. m_base_frame is defined below for exactly this.
-     H3  ARM JOINT SIGN. ecr88_params.xacro currently emits lim_arm_lower/upper as
+         links m_track. base_link NOW POINTS AT m_base_frame (2 319 kg); before that fix the
+         machine carried 394 kg of phantom track and totalled 9 543 kg against a published
+         8 752. It now totals 9 149.1 kg, matching the audit document exactly.
+     H3  [RESOLVED 2026-09-11] ARM JOINT SIGN. ecr88_params.xacro used to emit lim_arm_lower/upper as
          -149 deg / -25 deg. With axis (0,1,0), origin rpy 0 0 0 and arm_link built along
          +X, a POSITIVE rotation takes the arm tip DOWN, which is arm IN. Curling in is
          therefore positive and those limits are sign inverted. Verified by FK: at the
@@ -46,6 +51,9 @@
          with the arm folded up over the boom, while +149 deg gives the real tucked
          transport posture 0.17 m above ground. The values below use the corrected sign.
          Section 5.3 of the audit document has the full working.
+         The values below use the corrected sign, and Olivia's own labels ("31 arm-out,
+         155 arm-in", 2026-09-11) independently confirm that the angle grows as the arm
+         curls in, which is this file's positive direction. The sign is no longer inferred.
      H4  EMISSION STAGE IS NOT CONFIRMED. The Stage V pick above is an ASSERTION. The audit
          document's only discriminator was WITHDRAWN 2026-09-11: it compared the surveyed
          house box LenUpX = 2.28 m against Volvo's published "overall width of upper
@@ -249,13 +257,62 @@
   <!-- ============================================================================
        [3]  EFFORT  [N.m]
        ============================================================================ -->
+  <!-- ==================================================================
+       CYLINDER BORE AND ROD, 2026-09-11.  These were listed under "searched for
+       and NOT found" until now; they are not in any Volvo brochure or product
+       guide, but the AFTERMARKET SEAL-KIT catalogues index them by machine and
+       publish bore and rod for every cylinder on the machine:
+
+         cylinder | rod   | bore   | seal kit  | cylinder P/N
+         boom     |  70mm | 105mm  | 14589167  | 14528551 / 14528552
+         arm      |  60mm |  90mm  | 14589168  |
+         bucket   |  55mm |  80mm  | 14589169  | 14522092 / 14522093
+         blade    |  95mm | 130mm  | 14589165  |
+
+       Sources: oringsandmore.com/volvo-seal-kits (all four),
+       hwpartstore.com Volvo ECR88 boom / bucket seal kit pages (bore, rod and
+       cylinder part numbers, serial 10001-Up).
+       Tag: PUBLISHED, but by a parts vendor rather than by Volvo. That is a weaker
+       provenance than the product guide and it is why the tag is annotated.
+
+       THIS VALIDATED TWO EARLIER DERIVATIONS AND BROKE ONE:
+         eff_boom assumed a 105 mm bore as CLASS-TYPICAL  -> actual 105 mm. Exact.
+         eff_arm back-solved to an 89.8 mm bore from the published tearout force
+                                                         -> actual 90 mm. Exact.
+         eff_inp_link assumed an 85 mm bucket bore        -> actual 80 mm. WRONG,
+                 corrected below. It was 11 % too high.
+       Two independent routes landing on the exact catalogue bore is the strongest
+       corroboration this model has had; the bucket miss is the reminder that a
+       CLASS-TYPICAL tag is a real admission, not a formality.
+
+       Cylinder forces at the published 29.4 MPa implement relief:
+         boom   extend 254.6 kN   retract 141.4 kN
+         arm    extend 187.0 kN   retract 103.9 kN
+         bucket extend 147.8 kN   retract  77.9 kN
+         blade  extend 390.2 kN   retract 181.8 kN
+       ================================================================== -->
+  <xacro:property name="cyl_boom_bore"   value="0.105"/>  <!-- PUBLISHED (parts catalogue) [m] -->
+  <xacro:property name="cyl_boom_rod"    value="0.070"/>  <!-- PUBLISHED (parts catalogue) [m] -->
+  <xacro:property name="cyl_arm_bore"    value="0.090"/>  <!-- PUBLISHED (parts catalogue) [m] -->
+  <xacro:property name="cyl_arm_rod"     value="0.060"/>  <!-- PUBLISHED (parts catalogue) [m] -->
+  <xacro:property name="cyl_bkt_bore"    value="0.080"/>  <!-- PUBLISHED (parts catalogue) [m] -->
+  <xacro:property name="cyl_bkt_rod"     value="0.055"/>  <!-- PUBLISHED (parts catalogue) [m] -->
+  <xacro:property name="cyl_blade_bore"  value="0.130"/>  <!-- PUBLISHED (parts catalogue) [m] -->
+  <xacro:property name="cyl_blade_rod"   value="0.095"/>  <!-- PUBLISHED (parts catalogue) [m] -->
+  <xacro:property name="cyl_relief_pa"   value="29400000.0"/> <!-- PUBLISHED  implement relief 29.4 MPa, product guide -->
+  <!-- STROKE IS STILL NOT FOUND. Seal-kit catalogues never carry it. Without it the
+       cylinder-length to joint-angle map stays open, and so does the arm out-stop
+       placement. It is now the single most valuable missing number in this file. -->
+
   <xacro:property name="eff_swing"    value="22900.0"/>   <!-- PUBLISHED [L56]  Volvo max swing torque 22.9 kN.m. ECR88D ONLY: the ECR88 Plus publishes no swing torque at all, so do not carry this across. -->
-  <xacro:property name="eff_boom"     value="121255.0"/>  <!-- DERIVED [L61]  29.4 MPa implement relief x pi/4 x (105 mm bore)^2 = 254.6 kN, x the 0.4763 m max moment arm from the surveyed pin geometry. THE 105 mm BORE IS CLASS-TYPICAL [L60] and is the weak link: +/-5 mm of bore is +/-10 % here. Sanity: holding the front end horizontal at full stretch needs 57.6 kN.m (margin 2.10x). -->
-  <xacro:property name="eff_arm"      value="98704.0"/>   <!-- DERIVED from PUBLISHED [L58]  ISO 6015 arm tearout 39.8 kN x (lenArm 1.70 + bucket radius 0.780) = 2.48 m. VALIDATED: this implies a 186.2 kN cylinder force, which at 29.4 MPa over the 0.5300 m max moment arm back solves to an 89.8 mm bore, i.e. a standard 90 mm arm cylinder. -->
+  <xacro:property name="eff_boom"     value="${cyl_relief_pa * pi / 4 * cyl_boom_bore * cyl_boom_bore * 0.4763}"/>
+                                  <!-- DERIVED from PUBLISHED [L61]  = 121 256 N.m. 29.4 MPa x pi/4 x (105 mm bore)^2 = 254.6 kN, x the 0.4763 m max moment arm from the surveyed pin geometry. The bore is NO LONGER class-typical: the parts catalogue publishes 105 mm, exactly the value that was assumed, so the +/-10 % bore uncertainty this line used to carry is retired. What remains uncertain is the MOMENT ARM, which rests on the T9 pin-frame assumption. Sanity: holding the front end horizontal at full stretch needs 57.6 kN.m (margin 2.10x). -->
+  <xacro:property name="eff_arm"      value="98704.0"/>   <!-- DERIVED from PUBLISHED [L58]  ISO 6015 arm tearout 39.8 kN x (lenArm 1.70 + bucket radius 0.780) = 2.48 m. CONFIRMED 2026-09-11: this implies a 186.2 kN cylinder force, back-solving to an 89.8 mm bore. The parts catalogue publishes 90 mm. Computing it the other way instead (187.0 kN x 0.5300 m) gives 99 124 N.m, 0.4 % away, so the two routes agree and the tearout-derived value is kept because its force is Volvo-published rather than vendor-published. NOTE the 1.70 here is the 1.7 m arm; this value was NOT rescaled for the 2.1 m build. -->
   <xacro:property name="eff_bucket"   value="44616.0"/>   <!-- DERIVED from PUBLISHED [L57]  ISO 6015 bucket breakout 57.2 kN x the 0.780 m digging radius recovered in audit document 5.2. -->
   <xacro:property name="eff_tilt"     value="20000.0"/>   <!-- CLASS-TYPICAL, NO SOURCE [L64]  tiltrotator tilt torque for the 8-12 t class. -->
   <xacro:property name="eff_rotator"  value="10000.0"/>   <!-- CLASS-TYPICAL, NO SOURCE [L64]  tiltrotator rotation torque for the 8-12 t class. -->
-  <xacro:property name="eff_inp_link" value="70069.0"/>   <!-- DERIVED [L62]  bucket cylinder force 166.8 kN (85 mm bore, class typical, at 29.4 MPa) x lenInpLink 0.42 m. -->
+  <xacro:property name="eff_inp_link" value="${cyl_relief_pa * pi / 4 * cyl_bkt_bore * cyl_bkt_bore * lenInpLink}"/>
+                                  <!-- DERIVED from PUBLISHED [L62]  = 62 076 N.m. CORRECTED 2026-09-11: this was 70 069 N.m, computed from an 85 mm bucket bore taken as CLASS-TYPICAL. The parts catalogue publishes 80 mm, so the old value was 11 % too high. 29.4 MPa x pi/4 x (80 mm)^2 = 147.8 kN, x lenInpLink 0.42 m. -->
   <xacro:property name="eff_conn_rod" value="1.0"/>       <!-- GUESS, TOKEN [L63]  idler and the cut member of the 4 bar. No actuator. Do not read joint torque off this branch. -->
   <xacro:property name="eff_outp_link" value="${eff_bucket}"/> <!-- ALIAS  output_link IS the bucket_joint child, so it is the same joint and the same effort. -->
 
