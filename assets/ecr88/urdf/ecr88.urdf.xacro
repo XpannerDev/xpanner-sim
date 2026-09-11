@@ -210,6 +210,9 @@
 
   <!-- ==================== GROUND-TRUTH PARAMETERS ==================== -->
   <xacro:include filename="ecr88_params.xacro"/>
+  <!-- mass / CoM / inertia / joint limits. Authoritative for every m_*, com_*, inr_*,
+       lim_*, eff_*, vel_* and dyn_* property; provenance in resources/ECR88_estimated_dynamics.md -->
+  <xacro:include filename="ecr88_dynamics.xacro"/>
 
   <!-- =====================================================================
        ARITHMETIC CONSTANTS  (pure maths, NOT machine data)
@@ -310,7 +313,13 @@
        i.e. from the track bottom up to the house floor.
        ===================================================================== -->
   <link name="base_link">
-    <xacro:inertial_box mass="${m_base}"
+    <!-- m_base_frame, NOT m_base. m_base (2 713 kg) is the WHOLE undercarriage and
+         already contains both tracks; this URDF emits track_left_link and
+         track_right_link separately at m_track each, so using m_base here
+         double-counted 2 x 197 = 394 kg and put the machine at 9 543 kg against a
+         published 8 752 kg. m_base_frame = m_base - 2*m_track = 2 319 kg.
+         See ecr88_dynamics.xacro H2. -->
+    <xacro:inertial_box mass="${m_base_frame}"
                         x="${lenBottomX}" y="${lenBottomY - geo_track_w - geo_track_w}"
                         z="${lenUppZ1 - lenBottomZ1}"
                         xyz="0 0 ${(lenBottomZ1 + lenUppZ1) * half}"/>

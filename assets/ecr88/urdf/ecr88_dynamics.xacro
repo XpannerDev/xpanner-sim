@@ -1,0 +1,349 @@
+<?xml version="1.0"?>
+<!-- =====================================================================================
+     ecr88_dynamics.xacro  -  mass / CoM / inertia / joint limits for the Volvo ECR88
+     =====================================================================================
+     AUDIT DOCUMENT (read it before trusting any number here):
+         resources/ECR88_estimated_dynamics.md
+     Every property below is traceable to a numbered row of that document's section 6
+     confidence ledger. The ledger row number is quoted in each comment as [L<nn>].
+
+     TARGET MACHINE, ASSERTED and NOT YET CONFIRMED (see H4):
+         Volvo ECR88D, Tier 4f / Stage V (open centre, negative flow, 2x68+54 l/min)
+         mono boom 3.55 m, arm 1.7 m, rubber track 450 mm, standard counterweight 1 400 kg
+         published operating weight 8 752 kg
+     There are FOUR machines called "ECR88" and their masses, swing torque, swing speed and
+     counterweights all differ. See section 0 of the audit document. In particular the
+     22.9 kN.m swing torque and the 1 400 kg counterweight are ECR88D figures and must NOT
+     be relabelled onto an ECR88 Plus.
+
+     CONFIDENCE TAGS (the project's single rule, CLAUDE.md):
+         PUBLISHED     manufacturer figure, URL in the audit document
+         OEM-TEAM      supplied by Xpanner staff with the real machine; outranks PUBLISHED
+         DERIVED       computed, derivation shown in the audit document
+         CLASS-TYPICAL industry norm for this machine class, no ECR88 specific source
+         GUESS         placeholder
+     A guess labelled as a guess is fine. A guess presented as published is not.
+
+     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     FIVE INTEGRATION HAZARDS. Read before including this file.
+     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     H1  NAME COLLISION. This file defines the same property names as sections [14][C] and
+         [15][C]/[E] of ecr88_params.xacro. Load exactly ONE of the two: xacro silently
+         keeps the LAST definition, so loading both produces a working file with values
+         nobody chose. Intended migration: delete those sections from ecr88_params.xacro
+         and include this file instead, leaving that file purely geometric (which is what
+         its own header says it wants to be).
+     H2  TRACK DOUBLE COUNT. m_base here is the WHOLE undercarriage including both tracks
+         (2 713 kg), which is the decomposition the audit document's mass table uses.
+         ecr88.urdf.xacro currently gives base_link m_base AND gives each of the two track
+         links m_track. Point base_link at m_base_frame (2 319 kg) instead, or the machine
+         gains 394 kg of phantom track. m_base_frame is defined below for exactly this.
+     H3  ARM JOINT SIGN. ecr88_params.xacro currently emits lim_arm_lower/upper as
+         -149 deg / -25 deg. With axis (0,1,0), origin rpy 0 0 0 and arm_link built along
+         +X, a POSITIVE rotation takes the arm tip DOWN, which is arm IN. Curling in is
+         therefore positive and those limits are sign inverted. Verified by FK: at the
+         team's boom ground anchor, arm = -149 deg puts the bucket pin 1.9 m ABOVE ground
+         with the arm folded up over the boom, while +149 deg gives the real tucked
+         transport posture 0.17 m above ground. The values below use the corrected sign.
+         Section 5.3 of the audit document has the full working.
+     H4  EMISSION STAGE IS NOT CONFIRMED. The Stage V pick above is an ASSERTION. The audit
+         document's only discriminator was WITHDRAWN 2026-09-11: it compared the surveyed
+         house box LenUpX = 2.28 m against Volvo's published "overall width of upper
+         structure", but X is the FORE-AFT axis in this frame (proved by LenBottomX 2.820
+         vs published track LENGTH 2.830, and LenBottomY 2.320 vs gauge+shoe 2.300). The
+         surveyed WIDTH is LenUpY = 2.46 m, which misses Stage V 2 260 mm by +8.85 % and
+         Stage IIIB 2 210 mm by +11.31 %: it separates nothing. Blocked on the serial plate
+         and NOT usable as evidence:
+             m_published_operating_weight 8 752   (Stage IIIB reads 8 810 kg, CW 1 480)
+             m_counterweight              1 400   (Stage IIIB 1 480)
+             m_base, m_house and therefore EVERY mass here, which scale off 8 752
+             vel_swing 0.869 rad/s                (Stage IIIB 0.974 rad/s = 9.3 r/min)
+             the 136 l/min flow assumption behind vel_boom / vel_arm / vel_bucket
+                                                  (Stage IIIB is 1 x 169 l/min closed centre LS)
+             aux_rotator_flow 28 l/min            (Stage IIIB 35 l/min: see section [7])
+         Separately, LenUpY 2.46 vs the published 2.26 m is a 200 mm OPEN DISCREPANCY. Its
+         only consumer is house_link: if 2.26 is right, inr_house_ixx falls 2 628.40 ->
+         2 347.87 and inr_house_izz 5 339.23 -> 5 058.71. The survey value is kept.
+         Audit document section 0 and ledger row 34.
+     H5  THE ARM OUT STOP IS AN ASSUMPTION, NOT A DERIVATION. lim_arm_lower = 0 (arm
+         collinear with the boom) was previously justified by a residual against Volvo's
+         H "min front swing radius" 2 560 mm. That check was WITHDRAWN 2026-09-11: it
+         assumed the arm and tool fold inside 2.5834 m, and FK on this file's own values
+         shows the bucket pin never comes inside 3.370 m and the teeth never inside
+         3.731 m anywhere in the workspace. The agreement was coincidental. The other two
+         published figures cannot vote either (max reach A defines R_eff by construction;
+         reach on ground B contains neither L3 nor the arm angle). What remains is the
+         standard layout plus ref_arm_deadcentre at -5.6 deg. Consequences: lim_arm_lower,
+         ref_bucket_radius and lim_boom_mech_upper all inherit this. Teo's cylinder
+         strokes close it. Audit document section 5.2 steps 4 and 6, ledger rows 39/41/44.
+     ===================================================================================== -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ============================================================================
+       [0]  ANGLE HELPER
+       ============================================================================ -->
+  <xacro:property name="deg" value="${pi/180}"/>   <!-- EXACT. Degrees to radians. Every limit below is written as deg*<degrees> so it stays auditable against the document. -->
+
+  <!-- ============================================================================
+       [1]  MASS  [kg]
+       Anchor: published operating weight 8 752 kg. The budget closes exactly:
+         2713 base + 4966 house + 530 boom + 280 arm assy + 188 bucket + 75 operator = 8752
+       As built (tiltrotator and suction head instead of the 188 kg bucket, no operator)
+       the same links sum to 9 149 kg. See audit document section 3.3.
+       ============================================================================ -->
+  <xacro:property name="m_base"        value="2713.0"/>  <!-- CLASS-TYPICAL [L8]  undercarriage INCLUDING both tracks, blade, final drives = 0.31 x 8752 kg operating weight. 0.31 is the middle of the published 28-34 % class band, nudged low because this reduced tail swing design loads the house. See H2. -->
+  <xacro:property name="m_house"       value="4966.0"/>  <!-- DERIVED (RESIDUAL) [L9]  8752 minus base, boom, arm assy, bucket, operator. Every error in m_base lands here one for one: this is the largest single uncertainty in the model. Includes the 1 400 kg published counterweight. -->
+  <xacro:property name="m_boom"        value="530.0"/>   <!-- PUBLISHED [L2]  Volvo component table, 3.55 m mono boom, "includes cylinder, piping and pin, excludes boom cyl. pin". Taken whole because the URDF models no cylinder links. -->
+  <xacro:property name="m_arm"         value="241.0"/>   <!-- DERIVED from PUBLISHED [L10]  published 280 kg arm assembly ("includes cylinder, linkage and pin") minus the carved out 4 bar: 280 - 22 - 16 - 1. The bucket cylinder stays inside this figure. -->
+  <xacro:property name="m_inp_link"    value="22.0"/>    <!-- CLASS-TYPICAL [L11]  power link, pair of 0.42 m plates approx 20 x 140 mm section plus bosses. -->
+  <xacro:property name="m_conn_rod"    value="16.0"/>    <!-- CLASS-TYPICAL [L12]  0.40 m idler link, lighter section than the power link. -->
+  <xacro:property name="m_outp_link"   value="35.0"/>    <!-- CLASS-TYPICAL [L13]  quick coupler / tiltrotator top hitch about the bucket pin. NOT part of Volvo's 280 kg: on a bucket machine this member is the bucket's own top lug, so it is tool side. -->
+  <xacro:property name="m_gnd_link"    value="1.0"/>     <!-- GUESS, TOKEN [L14]  the ground link is NOT a physical part: it is the arm segment from the input link pin to the bucket pin (1.7 - 1.441 = 0.259 = lenGndLink). Its real mass is already inside m_arm. Token so PhysX never sees a zero mass body on a live joint. -->
+  <xacro:property name="m_tilt_mount"  value="45.0"/>    <!-- CLASS-TYPICAL, NO SOURCE [L15]  tiltrotator hitch body above the tilt axis. The research found NOTHING on the Xpanner X1 PanelLift. -->
+  <xacro:property name="m_tilt"        value="110.0"/>   <!-- CLASS-TYPICAL, NO SOURCE [L16]  tilt housing plus tilt cylinders. -->
+  <xacro:property name="m_rotator"     value="145.0"/>   <!-- CLASS-TYPICAL, NO SOURCE [L17]  rotator motor, worm gear and slew bearing: the heaviest single part of the tiltrotator. -->
+  <xacro:property name="m_attachment"  value="120.0"/>   <!-- CLASS-TYPICAL, NO SOURCE [L18]  suction adapter / frame. -->
+  <xacro:property name="m_probe"       value="25.0"/>    <!-- CLASS-TYPICAL, NO SOURCE [L19]  probe stand off member spanning distProbeToContactSurface. -->
+
+  <!-- Needed by ecr88.urdf.xacro's property contract but not part of the audit
+       document's 13 link table. -->
+  <xacro:property name="m_contact_surface" value="180.0"/> <!-- CLASS-TYPICAL, NO SOURCE [L20]  suction plate assembly, the TCP link. -->
+  <xacro:property name="m_track"       value="197.0"/>   <!-- DERIVED from PUBLISHED weight deltas [L21]  PER TRACK, rubber 450 mm. Volvo publishes the same machine with steel 450 (8 939 kg) and rubber 450 (8 752 kg): 187 kg for the pair, 93.5 kg per side. With a class typical steel chain of 290 kg/side (39 links at 154 mm pitch) the rubber track is 196.5 kg/side. -->
+  <xacro:property name="m_base_frame"  value="${m_base - 2*m_track}"/> <!-- DERIVED  = 2 319 kg. USE THIS for base_link when the two track links are emitted separately, so the tracks are not counted twice. See H2. -->
+  <xacro:property name="m_marker"      value="0.01"/>    <!-- GUESS, TOKEN  coordinate frame markers (boom_mount, gnss x2, cyl anchors x3). Small enough to be dynamically irrelevant, large enough that no importer trips over it. -->
+
+  <!-- Totals, COMPUTED so they cannot go stale. -->
+  <xacro:property name="m_total_asbuilt"
+                  value="${m_base + m_house + m_boom + m_arm + m_gnd_link + m_inp_link
+                          + m_conn_rod + m_outp_link + m_tilt_mount + m_tilt + m_rotator
+                          + m_attachment + m_probe + m_contact_surface}"/>
+                  <!-- DERIVED, COMPUTED so it can never go stale: sum of the 14 link masses above = 9 149 kg. -->
+  <xacro:property name="m_published_operating_weight" value="8752.0"/>      <!-- PUBLISHED [L1]  ECR88D Stage V, rubber 450, CW 1 400, arm 1.7, bucket 188. The as built total exceeds it by 397 kg = tool stack 660 - bucket 188 - operator 75. -->
+  <xacro:property name="m_counterweight"              value="1400.0"/>      <!-- PUBLISHED [L4]  inside m_house. Stage V standard; heavy option 1 610, Stage IIIB 1 480. -->
+
+  <!-- ============================================================================
+       [2]  JOINT LIMITS  [rad]
+       Convention, stated once and obeyed everywhere below (audit document 5.1):
+         REP-103, X forward / Y left / Z up.
+         boom, arm and bucket joints all use axis (0,1,0), so a POSITIVE URDF angle
+         rotates the child's +X toward -Z: THE LINK TIP GOES DOWN.
+           boom_joint   zero = boom pin to pin axis horizontal forward; + = boom DOWN
+           arm_joint    zero = arm collinear with the boom (fully out);  + = arm curls IN
+           bucket_joint zero = output_link +X collinear with arm +X;     + = tool curls IN
+           tilt_joint   axis (1,0,0);  rotator_joint axis (0,0,1), continuous
+       ============================================================================ -->
+
+  <!-- SWING. The real house slews endlessly; change the joint type to `continuous`
+       and drop these two if endless slew is wanted. -->
+  <xacro:property name="lim_swing_lower"  value="${-pi}"/>            <!-- PUBLISHED behaviour [L51]  machine slews 360 deg endlessly. -->
+  <xacro:property name="lim_swing_upper"  value="${ pi}"/>            <!-- PUBLISHED behaviour [L51] -->
+
+  <!-- BOOM, PRIMARY = X1 PanelLift OPERATING envelope, not the mechanical stops.
+       OEM-TEAM span 38 deg (Olivia, 2026-09-11: "-31 boom down ground reference to -69
+       max") placed by the project's bisection onto the boom angle at which the TCP first
+       touches ground (z = lenBottomZ1). Kept unchanged from ecr88_params.xacro so the
+       team's FK verification still holds. -->
+  <xacro:property name="lim_boom_lower"   value="${deg * -26.47}"/>   <!-- OEM-TEAM span + DERIVED placement [L42]  boom fully UP. -->
+  <xacro:property name="lim_boom_upper"   value="${deg *  11.53}"/>   <!-- OEM-TEAM span + DERIVED placement [L42]  boom DOWN, TCP at ground. -->
+
+  <!-- BOOM, MECHANICAL envelope. Needed for trenching; the PanelLift range above cannot
+       dig at all (38 deg of boom never reaches below ground, and the published 4 130 mm
+       digging depth needs 123 deg). DERIVED from Volvo's working range table:
+         upper: F max cutting height 6 790 = h + R_eff*sin(b_hi), R_eff = A - r0 = 6.030 m
+                -> +62.42 deg machine frame.
+         lower: C max digging depth 4 130 = h + L1*sin(b_lo) - (L2+L3) -> -60.67 deg.
+       NEITHER IS A CHECKED VALUE. Each solves one unknown from one published figure, so
+       there is no residual and nothing can fail. The former cross check against H (min
+       front swing radius 2 560 mm) is WITHDRAWN: see H5. The UPPER stop additionally
+       inherits H5's arm out stop assumption, because b_hi is solved with the chain
+       straight: +62.42 deg at arm out stop 0, +66.56 deg at -10, +70.81 deg at -20.
+       The one surviving independent test in this derivation is on the boom FOOT, not on
+       these stops: B reach on ground 6 800 = r0 + sqrt(R_eff^2 - h^2) closes to -5.7 mm
+       and pins h = 1.445 +/- 0.023 m.
+       Machine frame angles are + up; URDF is the negative of that. The PanelLift range
+       above sits entirely inside this one, as it must. -->
+  <xacro:property name="lim_boom_mech_lower" value="${deg * -62.42}"/> <!-- DERIVED [L41], INHERITS the H5 arm out stop ASSUMPTION  boom fully UP, from published max cutting height 6 790 mm with the chain assumed straight. -->
+  <xacro:property name="lim_boom_mech_upper" value="${deg *  60.67}"/> <!-- DERIVED [L41]  boom fully DOWN, from published max digging depth 4 130 mm. -->
+
+  <!-- ARM, PRIMARY = OEM-TEAM SPAN with DERIVED PLACEMENT. Same method CLAUDE.md already
+       blessed for the boom. Olivia's span of 124 deg is excellent and independently
+       matches the arm cylinder's stroke feasible sweep (123.3 deg at a retracted/stroke
+       ratio of 1.60). Her PLACEMENT (interior angle 31..155 deg) is contradicted twice:
+         (a) it needs 936 mm of stroke on a 1 366 mm retracted length, ratio 1.46, below
+             what a hydraulic cylinder can physically be built to;
+         (b) published max reach A and reach on ground B both close on FULL collinear
+             extension to within 6 mm, which requires the arm to reach interior 180 deg.
+       (b) IS WITHDRAWN AS CIRCULAR: max reach A defines R_eff = A - r0 and the bucket
+           radius is then back solved against it, so A closes for ANY arm out stop, and
+           reach on ground B = r0 + sqrt(R_eff^2 - h^2) contains neither. Only (a), the
+           stroke ratio, still argues against Olivia's literal placement.
+       So the span is kept and the out stop is ASSUMED at collinear, on the standard
+       layout plus ref_arm_deadcentre. NOTE H3 on the sign and H5 on the tag. -->
+  <xacro:property name="lim_arm_lower"    value="${deg *   0.00}"/>   <!-- ASSUMPTION [L44], was DERIVED until the H residual was withdrawn (H5)  arm fully OUT, collinear with the boom. NO published figure discriminates this placement. Standing support: it is the standard layout, and the arm cylinder is within 5.6 deg of dead centre here (moment arm 72 mm), so a STRUCTURAL stop belongs about there: prefer a SOFT joint limit. If the true out stop is -10 deg instead, ref_bucket_radius becomes 0.802 and lim_boom_mech_lower becomes -66.56 deg. Teo's cylinder strokes settle it. -->
+  <xacro:property name="lim_arm_upper"    value="${deg * 124.00}"/>   <!-- OEM-TEAM span [L43]  arm fully IN (interior angle 56 deg). -->
+
+  <!-- ARM, literal OEM-TEAM placement, sign corrected per H3. One edit away if Olivia
+       confirms the interior angle reading. Cylinder infeasible as noted above. -->
+  <xacro:property name="lim_arm_oem_lower" value="${deg *  25.00}"/>  <!-- OEM-TEAM literal [L45]  interior angle 155 deg. -->
+  <xacro:property name="lim_arm_oem_upper" value="${deg * 149.00}"/>  <!-- OEM-TEAM literal [L45]  interior angle 31 deg. -->
+
+  <!-- BUCKET (the tool carrier about the bucket pin). The 190 deg SPAN is PUBLISHED and
+       survives the swap from bucket to tiltrotator because it is a property of the
+       cylinder and 4 bar, not of the tool. Only the ZERO moves, and we hold no drawing of
+       the tiltrotator hitch, so the PLACEMENT is class typical: positioned so the tool
+       collinear posture that max reach and max depth both require sits inside the range
+       with about 45 deg of over dump beyond it. -->
+  <xacro:property name="lim_bucket_lower" value="${deg * -100.00}"/>  <!-- PUBLISHED span [L47] + CLASS-TYPICAL placement [L48]  fully dumped / open. -->
+  <xacro:property name="lim_bucket_upper" value="${deg *   90.00}"/>  <!-- PUBLISHED span [L47] + CLASS-TYPICAL placement [L48]  fully curled. Span is exactly 190 deg. -->
+
+  <!-- TILT. Nothing whatsoever was found on the Xpanner X1 PanelLift or its tiltrotator. -->
+  <xacro:property name="lim_tilt_lower"   value="${deg * -40.00}"/>   <!-- CLASS-TYPICAL, NO SOURCE [L49]  engcon and Rototilt units in the 6-11 t class are 2 x 40 deg; Steelwrist is +/-45. -->
+  <xacro:property name="lim_tilt_upper"   value="${deg *  40.00}"/>   <!-- CLASS-TYPICAL, NO SOURCE [L49] -->
+
+  <!-- ROTATOR is CONTINUOUS: no lim_rotator_* exists on purpose. The survey corroborates
+       the axis, distRotToAtt being purely -Z (0, 0, -0.2615). [L50] -->
+
+  <!-- Passive 4 bar dressing branch. The URDF cut is at the conn rod / output link pin,
+       so this branch is VISUAL ONLY and carries no load. Wide placeholders. -->
+  <xacro:property name="lim_inp_link_lower" value="${deg * -170.00}"/> <!-- GUESS  unconstrained placeholder, dressing branch. -->
+  <xacro:property name="lim_inp_link_upper" value="${deg *  -20.00}"/> <!-- GUESS  unconstrained placeholder, dressing branch. -->
+  <xacro:property name="lim_conn_rod_lower" value="${-pi}"/>           <!-- GUESS  the cut member: free by construction. -->
+  <xacro:property name="lim_conn_rod_upper" value="${ pi}"/>           <!-- GUESS  the cut member: free by construction. -->
+
+  <!-- ============================================================================
+       [3]  EFFORT  [N.m]
+       ============================================================================ -->
+  <xacro:property name="eff_swing"    value="22900.0"/>   <!-- PUBLISHED [L56]  Volvo max swing torque 22.9 kN.m. ECR88D ONLY: the ECR88 Plus publishes no swing torque at all, so do not carry this across. -->
+  <xacro:property name="eff_boom"     value="121255.0"/>  <!-- DERIVED [L61]  29.4 MPa implement relief x pi/4 x (105 mm bore)^2 = 254.6 kN, x the 0.4763 m max moment arm from the surveyed pin geometry. THE 105 mm BORE IS CLASS-TYPICAL [L60] and is the weak link: +/-5 mm of bore is +/-10 % here. Sanity: holding the front end horizontal at full stretch needs 57.6 kN.m (margin 2.10x). -->
+  <xacro:property name="eff_arm"      value="98704.0"/>   <!-- DERIVED from PUBLISHED [L58]  ISO 6015 arm tearout 39.8 kN x (lenArm 1.70 + bucket radius 0.780) = 2.48 m. VALIDATED: this implies a 186.2 kN cylinder force, which at 29.4 MPa over the 0.5300 m max moment arm back solves to an 89.8 mm bore, i.e. a standard 90 mm arm cylinder. -->
+  <xacro:property name="eff_bucket"   value="44616.0"/>   <!-- DERIVED from PUBLISHED [L57]  ISO 6015 bucket breakout 57.2 kN x the 0.780 m digging radius recovered in audit document 5.2. -->
+  <xacro:property name="eff_tilt"     value="20000.0"/>   <!-- CLASS-TYPICAL, NO SOURCE [L64]  tiltrotator tilt torque for the 8-12 t class. -->
+  <xacro:property name="eff_rotator"  value="10000.0"/>   <!-- CLASS-TYPICAL, NO SOURCE [L64]  tiltrotator rotation torque for the 8-12 t class. -->
+  <xacro:property name="eff_inp_link" value="70069.0"/>   <!-- DERIVED [L62]  bucket cylinder force 166.8 kN (85 mm bore, class typical, at 29.4 MPa) x lenInpLink 0.42 m. -->
+  <xacro:property name="eff_conn_rod" value="1.0"/>       <!-- GUESS, TOKEN [L63]  idler and the cut member of the 4 bar. No actuator. Do not read joint torque off this branch. -->
+  <xacro:property name="eff_outp_link" value="${eff_bucket}"/> <!-- ALIAS  output_link IS the bucket_joint child, so it is the same joint and the same effort. -->
+
+  <!-- ============================================================================
+       [4]  VELOCITY  [rad/s]
+       Derived as flow / bore area / moment arm, assuming the Stage V triple pump
+       (2x68+54 l/min) sums 136 l/min onto one implement function. THAT SUMMATION IS AN
+       ASSUMPTION [L65]. The moment arm collapses at the end stops (and passes through
+       exact zero at the arm cylinder's dead centre), so the instantaneous rate there
+       diverges: 1.0 rad/s covers at least 85 % of each joint's travel and PhysX clamps
+       near the stops, which is correct behaviour anyway.
+       ============================================================================ -->
+  <xacro:property name="vel_swing"    value="${8.3 * 2 * pi / 60}"/> <!-- PUBLISHED [L67]  8.3 r/min = 0.869 rad/s, ECR88D Stage V. SOURCE CONFLICT: the Stage IIIB brochure, the FR T4f brochure and the Volvo US site all say 9.3 r/min (0.974 rad/s). Adopted the Stage V figure to stay consistent with the Stage V mass anchor. -->
+  <xacro:property name="vel_boom"     value="1.0"/>       <!-- DERIVED [L66]  105 mm bore, 136 l/min gives 0.262 m/s rod speed; moment arm runs 0.146 to 0.476 m over the mechanical range, so the joint rate runs 0.55 to 1.80 rad/s. Full stroke in 3.2 s, class norm 3-5 s. -->
+  <xacro:property name="vel_arm"      value="1.0"/>       <!-- DERIVED [L66]  90 mm bore, 0.356 m/s rod speed; moment arm 0.181 to 0.530 m, joint rate 0.67 to 1.97 rad/s. Full stroke in 2.3 s. -->
+  <xacro:property name="vel_bucket"   value="1.0"/>       <!-- DERIVED [L66]  85 mm bore; the 4 bar gives a 0.267 m moment arm at the bucket pin, so 0.75 rad/s on one pump section and 1.50 rad/s flow summed. -->
+  <xacro:property name="vel_tilt"     value="0.5"/>       <!-- CLASS-TYPICAL, NO SOURCE [L68]  about 80 deg of tilt in 3 s. -->
+  <xacro:property name="vel_rotator"  value="1.0"/>       <!-- CLASS-TYPICAL, NO SOURCE [L68]  about 9.5 r/min continuous. Volvo's only tiltrotator relevant published figure is the "slope and rotator" aux circuit: see aux_rotator_flow_lpm in section [7], and note it is 28 l/min on Stage V, NOT the widely quoted Stage IIIB 35. -->
+  <xacro:property name="vel_inp_link" value="1.0"/>       <!-- DERIVED  follows the bucket branch it is driven by. -->
+  <xacro:property name="vel_conn_rod" value="1.0"/>       <!-- GUESS  follows the driven branch; visual only. -->
+  <xacro:property name="vel_outp_link" value="${vel_bucket}"/> <!-- ALIAS  same joint as bucket_joint. -->
+
+  <!-- ============================================================================
+       [5]  JOINT DYNAMICS
+       NOT a hydraulic model. Per CLAUDE.md the firmware commands VALVES, not joint
+       angles, so the real damping belongs in a per joint cylinder and valve model in the
+       SIL harness, not in a URDF scalar. These two exist only so the solver is well
+       conditioned. They are deliberately small: under 0.05 % of the main joints' effort,
+       and small enough not to freeze the 1 N.m dressing branch.
+       ============================================================================ -->
+  <xacro:property name="dyn_damping"  value="50.0"/>      <!-- GUESS [L69]  N.m.s/rad, solver hygiene only. -->
+  <xacro:property name="dyn_friction" value="10.0"/>      <!-- GUESS [L69]  N.m, solver hygiene only. -->
+
+  <!-- ============================================================================
+       [6]  CENTRE OF MASS [m] and INERTIA TENSOR [kg.m^2]
+       Optional block: ecr88.urdf.xacro currently recomputes inertia from its placeholder
+       primitives, so nothing below is read yet. These are the audit document's section 4
+       values, provided so nobody retypes 14 tensors by hand.
+       All uniform density primitives aligned with the link frame. Inertia is about the
+       link's own CoM. Off diagonals are ZERO: ixy and iyz exactly (every link is modelled
+       symmetric about its X-Z plane, all surveyed offsets having y = 0); ixz by
+       ASSUMPTION that the link frame axes are the principal axes, which is true by
+       construction for an axis aligned box or cylinder but FALSE for the real curved
+       gooseneck boom. [L37]
+       Triangle inequality ixx+iyy >= izz and its two permutations: CHECKED, all 14 links
+       pass. For a uniform box the margin is 2*m*c^2/12 >= 0, so it cannot be violated by
+       construction; the composite house_link was checked numerically after the parallel
+       axis sum, margins +818, +6 240, +4 439 kg.m^2. [L38]
+       ============================================================================ -->
+  <!-- base_link: box 2.820 x 2.320 x 0.775 (surveyed undercarriage box; height from
+       lenBottomZ1 to lenUppZ1). Tensor is for the FULL 2 713 kg undercarriage: scale by
+       m_base_frame/m_base if the tracks are emitted as separate links (H2). -->
+  <xacro:property name="com_base_x" value="0.0"/>      <xacro:property name="com_base_y" value="0.0"/>  <xacro:property name="com_base_z" value="-1.0575"/>  <!-- DERIVED, box centroid [L22]. Real CoM is LOWER (tracks, rollers) and slightly FORWARD (blade); uniform density is the reproducible choice and the bias is stated, not tuned away. -->
+  <xacro:property name="inr_base_ixx" value="1352.66"/><xacro:property name="inr_base_iyy" value="1933.70"/><xacro:property name="inr_base_izz" value="3014.78"/> <!-- DERIVED [L36] -->
+  <!-- house_link: 2 body composite. Counterweight 1 400 kg box 0.50 x 1.90 x 0.75 at
+       (-1.040, 0, -0.310), placed from the PUBLISHED 1.29 m tail swing radius and the
+       PUBLISHED 760 mm counterweight clearance. House body 3 566 kg box 2.28 x 2.46 x
+       1.035 at (+0.200, 0, -0.1525). The house CoM x of -0.150 is fixed FIRST by placing
+       the 2.28 m surveyed house box with its rear face on the 1.29 m tail radius; the
+       body centroid +0.200 is then BACK SOLVED to reproduce it. One derivation and one
+       solve, NOT two agreeing estimates.
+       OPEN 200 mm CONFLICT (H4, [L34]): the 2.46 m is the surveyed LenUpY, and Volvo
+       publishes the overall upper structure WIDTH as 2 260 mm (Stage V). The survey value
+       is kept because section 4 of the audit document is built on the survey throughout.
+       If 2.26 m wins, this link is the ONLY consumer and only two diagonals move:
+           inr_house_ixx 2 628.40 -> 2 347.87   (house body alone 2 116.7 -> 1 836.1)
+           inr_house_izz 5 339.23 -> 5 058.71
+           inr_house_iyy 3 528.63 and the CoM are UNCHANGED (neither contains Y). -->
+  <xacro:property name="com_house_x" value="-0.150"/>  <xacro:property name="com_house_y" value="0.0"/> <xacro:property name="com_house_z" value="-0.197"/>  <!-- DERIVED [L23][L26] -->
+  <xacro:property name="inr_house_ixx" value="2628.40"/><xacro:property name="inr_house_iyy" value="3528.63"/><xacro:property name="inr_house_izz" value="5339.23"/> <!-- DERIVED, composite with parallel axis [L36] -->
+  <!-- boom_link: box 3.690 x 0.335 x 1.244, Volvo's PUBLISHED component envelope. The
+       1.244 m height is the GOOSENECK CURVATURE envelope, not a filled section, so this
+       over states ixx roughly fivefold and iyy by about 10 %. Deliberate: it uses
+       published data instead of an invented section depth, and errs high on the axis that
+       matters least. -->
+  <xacro:property name="com_boom_x" value="1.598"/>    <xacro:property name="com_boom_y" value="0.0"/>  <xacro:property name="com_boom_z" value="0.200"/>  <!-- CLASS-TYPICAL [L28]  0.45 x lenBm1: a curved mono boom is foot heavy (pin bosses, cylinder ears); z is toward the gooseneck. -->
+  <xacro:property name="inr_boom_ixx" value="73.31"/>  <xacro:property name="inr_boom_iyy" value="669.73"/><xacro:property name="inr_boom_izz" value="606.33"/> <!-- DERIVED [L36], dims PUBLISHED [L31] -->
+  <!-- arm_link: box 2.283 x 0.305 x 0.518, Volvo's PUBLISHED component envelope. -->
+  <xacro:property name="com_arm_x" value="0.680"/>     <xacro:property name="com_arm_y" value="0.0"/>   <xacro:property name="com_arm_z" value="0.030"/>  <!-- CLASS-TYPICAL [L29]  0.40 x lenArm: boom end pin bosses and cylinder ears dominate. -->
+  <xacro:property name="inr_arm_ixx" value="7.26"/>    <xacro:property name="inr_arm_iyy" value="110.07"/><xacro:property name="inr_arm_izz" value="106.54"/> <!-- DERIVED [L36], dims PUBLISHED [L32] -->
+  <!-- 4 bar members: slender boxes on the surveyed pin to pin lengths. -->
+  <xacro:property name="com_gnd_link_x" value="-0.1295"/><xacro:property name="com_gnd_link_y" value="0.0"/><xacro:property name="com_gnd_link_z" value="0.00925"/> <!-- DERIVED, primitive centroid [L30] -->
+  <xacro:property name="inr_gnd_link_ixx" value="0.002"/><xacro:property name="inr_gnd_link_iyy" value="0.006"/><xacro:property name="inr_gnd_link_izz" value="0.006"/> <!-- DERIVED, box 0.260 x 0.100 x 0.100 -->
+  <xacro:property name="com_inp_link_x" value="0.210"/> <xacro:property name="com_inp_link_y" value="0.0"/><xacro:property name="com_inp_link_z" value="0.0"/> <!-- DERIVED, primitive centroid [L30] -->
+  <xacro:property name="inr_inp_link_ixx" value="0.065"/><xacro:property name="inr_inp_link_iyy" value="0.342"/><xacro:property name="inr_inp_link_izz" value="0.370"/> <!-- DERIVED, box 0.420 x 0.160 x 0.100 -->
+  <xacro:property name="com_conn_rod_x" value="0.200"/> <xacro:property name="com_conn_rod_y" value="0.0"/><xacro:property name="com_conn_rod_z" value="0.0"/> <!-- DERIVED, primitive centroid [L30] -->
+  <xacro:property name="inr_conn_rod_ixx" value="0.035"/><xacro:property name="inr_conn_rod_iyy" value="0.222"/><xacro:property name="inr_conn_rod_izz" value="0.239"/> <!-- DERIVED, box 0.400 x 0.140 x 0.080 -->
+  <xacro:property name="com_outp_link_x" value="0.165"/><xacro:property name="com_outp_link_y" value="0.0"/><xacro:property name="com_outp_link_z" value="0.0"/> <!-- DERIVED, primitive centroid [L30] -->
+  <xacro:property name="inr_outp_link_ixx" value="0.357"/><xacro:property name="inr_outp_link_iyy" value="0.412"/><xacro:property name="inr_outp_link_izz" value="0.580"/> <!-- DERIVED, box 0.330 x 0.300 x 0.180 -->
+  <!-- Tool stack: primitives sized from the surveyed offsets distTiltMntToTilt,
+       distRotToAtt, distAttToProbe, distProbeToContactSurface. Sections are CLASS-TYPICAL
+       or GUESS [L35]: there is no Xpanner geometry of any kind. -->
+  <xacro:property name="com_tilt_mount_x" value="0.140"/><xacro:property name="com_tilt_mount_y" value="0.0"/><xacro:property name="com_tilt_mount_z" value="-0.110"/> <!-- DERIVED, half of distTiltMntToTilt [L30] -->
+  <xacro:property name="inr_tilt_mount_ixx" value="0.824"/><xacro:property name="inr_tilt_mount_iyy" value="0.824"/><xacro:property name="inr_tilt_mount_izz" value="0.972"/> <!-- DERIVED, box 0.360 x 0.360 x 0.300 -->
+  <xacro:property name="com_tilt_x" value="0.0"/>      <xacro:property name="com_tilt_y" value="0.0"/>  <xacro:property name="com_tilt_z" value="-0.100"/> <!-- DERIVED, primitive centroid [L30] -->
+  <xacro:property name="inr_tilt_ixx" value="3.117"/>  <xacro:property name="inr_tilt_iyy" value="2.681"/><xacro:property name="inr_tilt_izz" value="4.148"/> <!-- DERIVED, box 0.450 x 0.500 x 0.300 -->
+  <xacro:property name="com_rotator_x" value="0.0"/>   <xacro:property name="com_rotator_y" value="0.0"/><xacro:property name="com_rotator_z" value="-0.13075"/> <!-- DERIVED, half of distRotToAtt [L30] -->
+  <xacro:property name="inr_rotator_ixx" value="2.001"/><xacro:property name="inr_rotator_iyy" value="2.001"/><xacro:property name="inr_rotator_izz" value="2.349"/> <!-- DERIVED, cylinder r 0.180, L 0.2615 -->
+  <xacro:property name="com_attachment_x" value="0.175"/><xacro:property name="com_attachment_y" value="0.0"/><xacro:property name="com_attachment_z" value="-0.286"/> <!-- DERIVED, half of distAttToProbe [L30] -->
+  <xacro:property name="inr_attachment_ixx" value="6.100"/><xacro:property name="inr_attachment_iyy" value="6.100"/><xacro:property name="inr_attachment_izz" value="5.000"/> <!-- DERIVED, box 0.500 x 0.500 x 0.600 -->
+  <xacro:property name="com_probe_x" value="0.050"/>   <xacro:property name="com_probe_y" value="0.0"/> <xacro:property name="com_probe_z" value="-0.132"/> <!-- DERIVED, half of distProbeToContactSurface [L30] -->
+  <xacro:property name="inr_probe_ixx" value="0.193"/> <xacro:property name="inr_probe_iyy" value="0.193"/><xacro:property name="inr_probe_izz" value="0.060"/> <!-- DERIVED, box 0.120 x 0.120 x 0.280 -->
+  <xacro:property name="com_contact_surface_x" value="0.0"/><xacro:property name="com_contact_surface_y" value="0.0"/><xacro:property name="com_contact_surface_z" value="0.0"/> <!-- DERIVED, plate centroid [L30] -->
+  <xacro:property name="inr_contact_surface_ixx" value="17.71"/><xacro:property name="inr_contact_surface_iyy" value="21.65"/><xacro:property name="inr_contact_surface_izz" value="39.26"/> <!-- DERIVED, box 1.200 x 1.085 x 0.060 (LenPLWidth x LenPanelHeight) -->
+
+  <!-- ============================================================================
+       [7]  BY PRODUCTS of the joint limit derivation. Not consumed by the URDF, but they
+       are real recovered quantities and the next person will want them.
+       ============================================================================ -->
+  <xacro:property name="ref_bucket_radius"   value="0.780"/>  <!-- DERIVED [L39], INHERITS the H5 arm out stop ASSUMPTION  Volvo reference bucket pin to teeth radius, recovered from max digging reach A = 6 970 mm minus distChsToBmMnt_x, minus lenBm1 and lenArm, WITH THE ARM ASSUMED COLLINEAR. The former "confirmed by B, F and H" claim is WITHDRAWN: B and A are insensitive to the arm placement by construction and H is unreachable (H5). Weakly sensitive in the plausible range: 0.780 at out stop 0, 0.802 at -10 deg, 0.871 at -20 deg. eff_bucket and eff_arm are computed from this, so they move 44.6 -> 45.9 -> 49.8 kN.m and 98.7 -> 99.6 -> 102.3 kN.m across the same range. Volvo does not publish it. -->
+  <xacro:property name="ref_boom_cyl_stroke" value="0.829"/>  <!-- DERIVED [L53]  from the mechanical boom range and the surveyed pin geometry. Retracted 1.351 m, ratio 1.63: an ordinary excavator cylinder. REPLACE with Teo's measured stroke. -->
+  <xacro:property name="ref_arm_cyl_stroke"  value="0.833"/>  <!-- DERIVED [L54]  from the 124 deg arm sweep. Retracted 1.325 m, ratio 1.59: tight but realisable. REPLACE with Teo's measured stroke. -->
+  <xacro:property name="ref_arm_deadcentre"  value="${deg * -5.6}"/> <!-- DERIVED [L55]  angCylLrgArm 144.4 deg and angCylSmlArm 150 deg are only 5.6 deg apart, so the arm cylinder passes through EXACT dead centre 5.6 deg before collinear. The arm's out stop is structural, not hydraulic. -->
+
+  <!-- AUXILIARY HYDRAULIC CIRCUITS. Carried here ONLY so that the next person sizing the
+       X1 PanelLift circuit reaches for the right stage's number. Nothing in the URDF reads
+       these. THE TWO STAGES PUBLISH MATERIALLY DIFFERENT FIGURES and the widely quoted 35
+       l/min is the Stage IIIB one; the emission stage is NOT confirmed (H4). "Slope and
+       rotator" IS the tiltrotator supply, i.e. the circuit this build's tiltrotator and
+       suction head actually hang off. -->
+  <xacro:property name="aux_rotator_flow_lpm"      value="28.0"/>   <!-- PUBLISHED [L70]  Stage V product guide p.11 OPTIONAL EQUIPMENT, "Slope and rotator, max. flow 28 l/min (7.4 gal/min)". THE TILTROTATOR SUPPLY. The Stage IIIB brochure says 35 l/min: 25 % higher. Do not size on 35 until the serial plate is read. -->
+  <xacro:property name="aux_rotator_press_mpa"     value="14.7"/>   <!-- PUBLISHED [L70]  14.7 MPa (2 130 psi). Identical on both stages. -->
+  <xacro:property name="aux_rotator_flow_lpm_iiib" value="35.0"/>   <!-- PUBLISHED [L70]  Stage IIIB brochure, Optional Equipment. Here so the alternative is one edit away, NOT because it applies to the asserted machine. -->
+  <xacro:property name="aux_breaker_flow_lpm"      value="118.0"/>  <!-- PUBLISHED [L71]  Stage V, X1 single (X1 double: 68 l/min). Informational: nothing here uses it. Stage IIIB brochure says 90 l/min. -->
+  <xacro:property name="aux_breaker_press_mpa"     value="21.6"/>   <!-- PUBLISHED [L71]  Stage V, X1 single (X1 double: 29.4 MPa, which equals the implement relief). The Stage IIIB brochure's 32.4 MPa EXCEEDS the 29.4 MPa implement relief pressure that both stages publish: one more reason not to mix the stages' aux figures. -->
+
+</robot>

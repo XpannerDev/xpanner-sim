@@ -822,7 +822,7 @@
        resources/ (no operating-weight row exists in any of the three extracts).
        It is a sanity reference ONLY — nothing is normalised to it. Confirm it
        against the real ECR88(D) spec sheet, or delete it. -->
-  <xacro:property name="mass_total_reference"  value="8500.0"/>  <!-- ESTIMATE (T10) recalled brochure figure, unsourced -->
+  <!-- mass_total_reference: now defined in ecr88_dynamics.xacro -->  <!-- ESTIMATE (T10) recalled brochure figure, unsourced -->
 
   <!-- ..................................................................
        [14][C] AUTHORITATIVE MASS SET — m_*, one entry per link that
@@ -830,41 +830,36 @@
        (its "REQUIRED PROPERTY CONTRACT" block, section [C]).
        EVERY value is ESTIMATE (T4). Kilograms.
        .................................................................. -->
-  <xacro:property name="m_base"                value="2200.0"/>  <!-- ESTIMATE (T4) track frame / centre car body, tracks excluded -->
-  <xacro:property name="m_track"               value="900.0"/>   <!-- ESTIMATE (T4) PER TRACK — emitted twice (left + right) -->
-  <xacro:property name="m_house"               value="3200.0"/>  <!-- ESTIMATE (T4) upper structure + counterweight + engine + cab -->
-  <xacro:property name="m_boom"                value="620.0"/>   <!-- ESTIMATE (T4) 3.55 m boom (lenBm1) -->
-  <xacro:property name="m_arm"                 value="300.0"/>   <!-- ESTIMATE (T4) 1.7 m arm; scale ~x1.2 for the 2.1 m variant -->
-  <xacro:property name="m_gnd_link"            value="5.0"/>     <!-- ESTIMATE (T4) 4-bar ground link (arm-side member, 0.2597 m) -->
-  <xacro:property name="m_inp_link"            value="25.0"/>    <!-- ESTIMATE (T4) 4-bar input/crank link -->
-  <xacro:property name="m_conn_rod"            value="15.0"/>    <!-- ESTIMATE (T4) 4-bar connecting rod (idler, cut member) -->
-  <xacro:property name="m_outp_link"           value="40.0"/>    <!-- ESTIMATE (T4) 4-bar output link — the load path to the tool -->
-  <xacro:property name="m_tilt_mount"          value="60.0"/>    <!-- ESTIMATE (T4) -->
-  <xacro:property name="m_tilt"                value="120.0"/>   <!-- ESTIMATE (T4) JK tilt body -->
-  <xacro:property name="m_rotator"             value="180.0"/>   <!-- ESTIMATE (T4) JK rotator body -->
-  <xacro:property name="m_attachment"          value="90.0"/>    <!-- ESTIMATE (T4) suction adapter -->
-  <xacro:property name="m_probe"               value="20.0"/>    <!-- ESTIMATE (T4) probe stand-off member -->
-  <xacro:property name="m_contact_surface"     value="180.0"/>   <!-- ESTIMATE (T4) suction plate assembly (the TCP link) -->
+  <!-- m_base: now defined in ecr88_dynamics.xacro -->  <!-- ESTIMATE (T4) track frame / centre car body, tracks excluded -->
+  <!-- m_track: now defined in ecr88_dynamics.xacro -->   <!-- ESTIMATE (T4) PER TRACK — emitted twice (left + right) -->
+  <!-- m_house: now defined in ecr88_dynamics.xacro -->  <!-- ESTIMATE (T4) upper structure + counterweight + engine + cab -->
+  <!-- m_boom: now defined in ecr88_dynamics.xacro -->   <!-- ESTIMATE (T4) 3.55 m boom (lenBm1) -->
+  <!-- m_arm: now defined in ecr88_dynamics.xacro -->   <!-- ESTIMATE (T4) 1.7 m arm; scale ~x1.2 for the 2.1 m variant -->
+  <!-- m_gnd_link: now defined in ecr88_dynamics.xacro -->     <!-- ESTIMATE (T4) 4-bar ground link (arm-side member, 0.2597 m) -->
+  <!-- m_inp_link: now defined in ecr88_dynamics.xacro -->    <!-- ESTIMATE (T4) 4-bar input/crank link -->
+  <!-- m_conn_rod: now defined in ecr88_dynamics.xacro -->    <!-- ESTIMATE (T4) 4-bar connecting rod (idler, cut member) -->
+  <!-- m_outp_link: now defined in ecr88_dynamics.xacro -->    <!-- ESTIMATE (T4) 4-bar output link — the load path to the tool -->
+  <!-- m_tilt_mount: now defined in ecr88_dynamics.xacro -->    <!-- ESTIMATE (T4) -->
+  <!-- m_tilt: now defined in ecr88_dynamics.xacro -->   <!-- ESTIMATE (T4) JK tilt body -->
+  <!-- m_rotator: now defined in ecr88_dynamics.xacro -->   <!-- ESTIMATE (T4) JK rotator body -->
+  <!-- m_attachment: now defined in ecr88_dynamics.xacro -->    <!-- ESTIMATE (T4) suction adapter -->
+  <!-- m_probe: now defined in ecr88_dynamics.xacro -->    <!-- ESTIMATE (T4) probe stand-off member -->
+  <!-- m_contact_surface: now defined in ecr88_dynamics.xacro -->   <!-- ESTIMATE (T4) suction plate assembly (the TCP link) -->
   <!-- Marker/frame links (boom_mount, gnss_main, gnss_aux, the three cyl_*
        anchors). Not massless — see the note above. -->
-  <xacro:property name="m_marker"              value="0.01"/>    <!-- ESTIMATE (T4) coordinate-frame markers, 6 of them -->
+  <!-- m_marker: now defined in ecr88_dynamics.xacro -->    <!-- ESTIMATE (T4) coordinate-frame markers, 6 of them -->
 
   <!-- ..................................................................
        Total of the split, COMPUTED — never hand-typed, so it cannot go stale
        the way the old "pinned to 8.5 t" comment did. Tracks counted twice,
        markers six times (the six frame links listed above).
        .................................................................. -->
-  <xacro:property name="mass_total_estimated"
-                  value="${m_base + 2*m_track + m_house + m_boom + m_arm
-                          + m_gnd_link + m_inp_link + m_conn_rod + m_outp_link
-                          + m_tilt_mount + m_tilt + m_rotator + m_attachment
-                          + m_probe + m_contact_surface + 6*m_marker}"/>
+  <!-- mass_total_estimated: now defined in ecr88_dynamics.xacro -->
   <!-- How far the guessed split lands from the recalled 8.5 t (T10). Positive
        = the split is heavier. This is NOT an error term to be driven to zero:
        both sides are guesses. It is here so a reader sees the size of the
        uncertainty instead of a false claim of agreement. -->
-  <xacro:property name="mass_total_split_delta"
-                  value="${mass_total_estimated - mass_total_reference}"/>
+  <!-- mass_total_split_delta: now defined in ecr88_dynamics.xacro -->
 
   <!-- ..................................................................
        LEGACY mass_* NAMES — DERIVED from m_* above, not independent numbers.
@@ -873,19 +868,19 @@
        Do NOT put a literal back into any of the aliased rows: that is how the
        two disagreeing mass sets came about in the first place.
        .................................................................. -->
-  <xacro:property name="mass_undercarriage"    value="${m_base + 2*m_track}"/>  <!-- alias: base + both tracks -->
-  <xacro:property name="mass_house"            value="${m_house}"/>      <!-- alias -->
-  <xacro:property name="mass_bm1"              value="${m_boom}"/>       <!-- alias -->
-  <xacro:property name="mass_bm2"              value="0.0"/>     <!-- lenBm2 = 0, segment absent. Not an estimate. -->
-  <xacro:property name="mass_arm"              value="${m_arm}"/>        <!-- alias -->
-  <xacro:property name="mass_inp_link"         value="${m_inp_link}"/>   <!-- alias -->
-  <xacro:property name="mass_conn_rod"         value="${m_conn_rod}"/>   <!-- alias -->
-  <xacro:property name="mass_outp_link"        value="${m_outp_link}"/>  <!-- alias -->
-  <xacro:property name="mass_tilt_mnt"         value="${m_tilt_mount}"/> <!-- alias -->
-  <xacro:property name="mass_tilt"            value="${m_tilt}"/>        <!-- alias -->
-  <xacro:property name="mass_rot"              value="${m_rotator}"/>    <!-- alias -->
-  <xacro:property name="mass_att"              value="${m_attachment}"/> <!-- alias -->
-  <xacro:property name="mass_frame_only"       value="${m_marker}"/>     <!-- alias -->
+  <!-- mass_undercarriage: now defined in ecr88_dynamics.xacro -->  <!-- alias: base + both tracks -->
+  <!-- mass_house: now defined in ecr88_dynamics.xacro -->      <!-- alias -->
+  <!-- mass_bm1: now defined in ecr88_dynamics.xacro -->       <!-- alias -->
+  <!-- mass_bm2: now defined in ecr88_dynamics.xacro -->     <!-- lenBm2 = 0, segment absent. Not an estimate. -->
+  <!-- mass_arm: now defined in ecr88_dynamics.xacro -->        <!-- alias -->
+  <!-- mass_inp_link: now defined in ecr88_dynamics.xacro -->   <!-- alias -->
+  <!-- mass_conn_rod: now defined in ecr88_dynamics.xacro -->   <!-- alias -->
+  <!-- mass_outp_link: now defined in ecr88_dynamics.xacro -->  <!-- alias -->
+  <!-- mass_tilt_mnt: now defined in ecr88_dynamics.xacro --> <!-- alias -->
+  <!-- mass_tilt: now defined in ecr88_dynamics.xacro -->        <!-- alias -->
+  <!-- mass_rot: now defined in ecr88_dynamics.xacro -->    <!-- alias -->
+  <!-- mass_att: now defined in ecr88_dynamics.xacro --> <!-- alias -->
+  <!-- mass_frame_only: now defined in ecr88_dynamics.xacro -->     <!-- alias -->
   <!-- No m_* counterpart: the current URDF emits boom_mount_link as a marker
        frame and emits no fork link at all (the fork is the PanelLift variant,
        section [10]). These two stay independent ESTIMATEs and are NOT part of
@@ -1061,46 +1056,46 @@
        only — jntRotLower/Upper stay unaliased on purpose (they are the
        revolute-fallback pair described in section [13]).
        .................................................................. -->
-  <xacro:property name="lim_swing_lower"       value="${jntSwingLower}"/>                <!-- ALIAS -->
-  <xacro:property name="lim_swing_upper"       value="${jntSwingUpper}"/>                <!-- ALIAS -->
-  <xacro:property name="eff_swing"             value="${jntSwingEffort}"/>               <!-- ALIAS -->
-  <xacro:property name="vel_swing"             value="${jntSwingVelocity}"/>             <!-- ALIAS -->
+  <!-- lim_swing_lower: now defined in ecr88_dynamics.xacro -->                <!-- ALIAS -->
+  <!-- lim_swing_upper: now defined in ecr88_dynamics.xacro -->                <!-- ALIAS -->
+  <!-- eff_swing: now defined in ecr88_dynamics.xacro -->               <!-- ALIAS -->
+  <!-- vel_swing: now defined in ecr88_dynamics.xacro -->             <!-- ALIAS -->
 
-  <xacro:property name="lim_boom_lower"        value="${jntBm1Lower}"/>                  <!-- ALIAS -->
-  <xacro:property name="lim_boom_upper"        value="${jntBm1Upper}"/>                  <!-- ALIAS -->
-  <xacro:property name="eff_boom"              value="${jntBm1Effort}"/>                 <!-- ALIAS -->
-  <xacro:property name="vel_boom"              value="${jntBm1Velocity}"/>               <!-- ALIAS -->
+  <!-- lim_boom_lower: now defined in ecr88_dynamics.xacro -->                  <!-- ALIAS -->
+  <!-- lim_boom_upper: now defined in ecr88_dynamics.xacro -->                  <!-- ALIAS -->
+  <!-- eff_boom: now defined in ecr88_dynamics.xacro -->                 <!-- ALIAS -->
+  <!-- vel_boom: now defined in ecr88_dynamics.xacro -->               <!-- ALIAS -->
 
-  <xacro:property name="lim_arm_lower"         value="${jntArmLower}"/>                  <!-- ALIAS -->
-  <xacro:property name="lim_arm_upper"         value="${jntArmUpper}"/>                  <!-- ALIAS -->
-  <xacro:property name="eff_arm"               value="${jntArmEffort}"/>                 <!-- ALIAS -->
-  <xacro:property name="vel_arm"               value="${jntArmVelocity}"/>               <!-- ALIAS -->
+  <!-- lim_arm_lower: now defined in ecr88_dynamics.xacro -->                  <!-- ALIAS -->
+  <!-- lim_arm_upper: now defined in ecr88_dynamics.xacro -->                  <!-- ALIAS -->
+  <!-- eff_arm: now defined in ecr88_dynamics.xacro -->                 <!-- ALIAS -->
+  <!-- vel_arm: now defined in ecr88_dynamics.xacro -->               <!-- ALIAS -->
 
-  <xacro:property name="lim_bucket_lower"      value="${jntBktLower}"/>                  <!-- ALIAS -->
-  <xacro:property name="lim_bucket_upper"      value="${jntBktUpper}"/>                  <!-- ALIAS -->
-  <xacro:property name="eff_bucket"            value="${jntBktEffort}"/>                 <!-- ALIAS -->
-  <xacro:property name="vel_bucket"            value="${jntBktVelocity}"/>               <!-- ALIAS -->
+  <!-- lim_bucket_lower: now defined in ecr88_dynamics.xacro -->                  <!-- ALIAS -->
+  <!-- lim_bucket_upper: now defined in ecr88_dynamics.xacro -->                  <!-- ALIAS -->
+  <!-- eff_bucket: now defined in ecr88_dynamics.xacro -->                 <!-- ALIAS -->
+  <!-- vel_bucket: now defined in ecr88_dynamics.xacro -->               <!-- ALIAS -->
 
-  <xacro:property name="lim_inp_link_lower"    value="${jntInpLinkLower}"/>              <!-- ALIAS -->
-  <xacro:property name="lim_inp_link_upper"    value="${jntInpLinkUpper}"/>              <!-- ALIAS -->
-  <xacro:property name="eff_inp_link"          value="${jntInpLinkEffort}"/>             <!-- ALIAS -->
-  <xacro:property name="vel_inp_link"          value="${jntInpLinkVelocity}"/>           <!-- ALIAS -->
+  <!-- lim_inp_link_lower: now defined in ecr88_dynamics.xacro -->              <!-- ALIAS -->
+  <!-- lim_inp_link_upper: now defined in ecr88_dynamics.xacro -->              <!-- ALIAS -->
+  <!-- eff_inp_link: now defined in ecr88_dynamics.xacro -->             <!-- ALIAS -->
+  <!-- vel_inp_link: now defined in ecr88_dynamics.xacro -->           <!-- ALIAS -->
 
-  <xacro:property name="lim_conn_rod_lower"    value="${jntConnRodLower}"/>              <!-- ALIAS -->
-  <xacro:property name="lim_conn_rod_upper"    value="${jntConnRodUpper}"/>              <!-- ALIAS -->
-  <xacro:property name="eff_conn_rod"          value="${jntConnRodEffort}"/>             <!-- ALIAS -->
-  <xacro:property name="vel_conn_rod"          value="${jntConnRodVelocity}"/>           <!-- ALIAS -->
+  <!-- lim_conn_rod_lower: now defined in ecr88_dynamics.xacro -->              <!-- ALIAS -->
+  <!-- lim_conn_rod_upper: now defined in ecr88_dynamics.xacro -->              <!-- ALIAS -->
+  <!-- eff_conn_rod: now defined in ecr88_dynamics.xacro -->             <!-- ALIAS -->
+  <!-- vel_conn_rod: now defined in ecr88_dynamics.xacro -->           <!-- ALIAS -->
 
-  <xacro:property name="lim_tilt_lower"        value="${jntTiltLower}"/>                 <!-- ALIAS -->
-  <xacro:property name="lim_tilt_upper"        value="${jntTiltUpper}"/>                 <!-- ALIAS -->
-  <xacro:property name="eff_tilt"              value="${jntTiltEffort}"/>                <!-- ALIAS -->
-  <xacro:property name="vel_tilt"              value="${jntTiltVelocity}"/>              <!-- ALIAS -->
+  <!-- lim_tilt_lower: now defined in ecr88_dynamics.xacro -->                 <!-- ALIAS -->
+  <!-- lim_tilt_upper: now defined in ecr88_dynamics.xacro -->                 <!-- ALIAS -->
+  <!-- eff_tilt: now defined in ecr88_dynamics.xacro -->                <!-- ALIAS -->
+  <!-- vel_tilt: now defined in ecr88_dynamics.xacro -->              <!-- ALIAS -->
 
-  <xacro:property name="eff_rotator"           value="${jntRotEffort}"/>                 <!-- ALIAS (continuous: no lim_*) -->
-  <xacro:property name="vel_rotator"           value="${jntRotVelocity}"/>               <!-- ALIAS (continuous: no lim_*) -->
+  <!-- eff_rotator: now defined in ecr88_dynamics.xacro -->                 <!-- ALIAS (continuous: no lim_*) -->
+  <!-- vel_rotator: now defined in ecr88_dynamics.xacro -->               <!-- ALIAS (continuous: no lim_*) -->
 
-  <xacro:property name="dyn_damping"           value="${jnt_damping_default}"/>          <!-- ALIAS -->
-  <xacro:property name="dyn_friction"          value="${jnt_friction_default}"/>         <!-- ALIAS -->
+  <!-- dyn_damping: now defined in ecr88_dynamics.xacro -->          <!-- ALIAS -->
+  <!-- dyn_friction: now defined in ecr88_dynamics.xacro -->         <!-- ALIAS -->
 
   <!-- ..................................................................
        [15][F] Bucket 4-bar mimic coefficients.  ALIASES onto section [13].
