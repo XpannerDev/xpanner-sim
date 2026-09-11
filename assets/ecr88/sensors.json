@@ -12,9 +12,9 @@
     "These are CHOICES, not measurements: no lens has been selected for this machine.",
     "Pick real parts and put their numbers here."
   ],
-
-  "default": { "hfov": 90.0 },
-
+  "default": {
+    "hfov": 90.0
+  },
   "cam_house_front": {
     "hfov": 120.0,
     "_why": "Sits low on the front deck, so at any useful down-angle the ground fills a lot of the frame. A wide lens buys back the context above the horizon without giving up the near ground."
@@ -31,7 +31,14 @@
     "hfov": 90.0,
     "_why": "Close-range grip check at 1.1 m. Wider than this and the cups get small in frame, which is the opposite of the point."
   },
-  "cam_arm_tip": { "hfov": 90.0 },
-  "cam_boom_mid": { "hfov": 90.0 },
-  "cam_tool": { "hfov": 90.0 }
+  "cam_boom_mid": {
+    "hfov": 90.0
+  },
+  "cam_tool": {
+    "hfov": 90.0
+  },
+  "cam_arm_root": {
+    "hfov": 90.0,
+    "_why": "Search shows it covers both the stack and the cups at 90 deg; at 70 deg it loses the cups. Do not narrow this one."
+  }
 }
