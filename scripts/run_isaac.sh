@@ -447,10 +447,20 @@ COMMON=(
     "${MOUNTS[@]}"
 )
 
+# `docker run -t` dies with "cannot attach stdin to a TTY-enabled container" when
+# stdin is not a terminal, which is exactly how this gets launched from CI, from
+# nohup, or from an agent. Decide the interactivity flags from the real stdin
+# instead of hard-coding -it.
+if [ -t 0 ]; then
+    TTY_FLAGS=(-it)
+else
+    TTY_FLAGS=(-i)
+fi
+
 case "${SUBCOMMAND}" in
     shell)
         note "starting interactive shell in ${CONTAINER} (repo at /work/${REPO_NAME})"
-        exec docker run -it --entrypoint bash "${COMMON[@]}" "${IMAGE}"
+        exec docker run "${TTY_FLAGS[@]}" --entrypoint bash "${COMMON[@]}" "${IMAGE}"
         ;;
 
     convert)
@@ -472,7 +482,7 @@ case "${SUBCOMMAND}" in
         note 'connect the Isaac Sim WebRTC Streaming Client 2.0.0 AFTER the log says:'
         note '  Isaac Sim Full Streaming App is loaded.'
         note 'the stream is UNAUTHENTICATED: open those ports to your laptop IP /32 only.'
-        exec docker run -it --entrypoint /isaac-sim/runheadless.sh "${COMMON[@]}" \
+        exec docker run "${TTY_FLAGS[@]}" --entrypoint /isaac-sim/runheadless.sh "${COMMON[@]}" \
             -e "ISAACSIM_HOST=${HOST_IP}" \
             -e "ISAACSIM_SIGNAL_PORT=${SIGNAL_PORT}" \
             -e "ISAACSIM_STREAM_PORT=${STREAM_PORT}" \
