@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Generated assets
+*.usd
+*.usda
+*.usdc
+/assets/**/usd/
+/assets/**/*.urdf          # xacro 전개 산출물 (소스는 .urdf.xacro)
+/build/
+/out/
+
+# Isaac Sim
+.thumbs/
+*.log

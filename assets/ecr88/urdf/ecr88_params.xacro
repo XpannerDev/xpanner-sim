@@ -1,0 +1,1056 @@
+<?xml version="1.0"?>
+<!--
+  ============================================================================
+  ecr88_params.xacro
+  Volvo ECR88 short-swing excavator + Xpanner X1 PanelLift front end
+  Parameter set for URDF -> USD asset-ization (Isaac Sim 4.x / 5.x,
+  isaacsim.asset.importer.urdf).
+
+  This file contains PARAMETERS ONLY. No links, no joints, no macros.
+  Include it first from ecr88.urdf.xacro.
+
+  ============================================================================
+  PROVENANCE
+  ============================================================================
+  PRIMARY (authoritative, every dist*/len*/ang* below):
+    resources/ECR88_kinematic_parameters.md
+      Sheet `KinematicPara_new`, column "ECR88 기장"
+      (origin: SharePoint  task-specific-automation / Shared Documents /
+       X1 - Excavator / DetailConecpt / Kinematic / 260801 /
+       Kinematic Measurement parameter_MachineModel_ProductionV1.xlsx)
+
+  SECONDARY (reference only, used ONLY where KinematicPara_new has no row:
+  the boundary boxes, the PanelLift/fork geometry and the suction plate):
+    Same file, sheet `old` [hidden] — raw Leica MC1 + Total Station readings.
+
+  Property names are byte-identical to the spreadsheet parameter names
+  (including the source's own inconsistencies, e.g. LenUppX1 vs LenUpX) so
+  this file diffs 1:1 against the sheet. Do not "tidy" the names.
+
+  Units: length [m], angle [rad] (written in the sheet's own `pi/180*deg` form
+  inside a xacro expression).
+
+  ============================================================================
+  NAMING: SHEET VOCABULARY vs URDF CONTRACT VOCABULARY
+  ============================================================================
+  Sections [4]-[14] keep the SPREADSHEET names byte-identical, so this file
+  diffs 1:1 against KinematicPara_new (see the note above).
+  ecr88.urdf.xacro consumes a DIFFERENT vocabulary — the "REQUIRED PROPERTY
+  CONTRACT" block at the top of that file: per-axis dist*_x/_y/_z, lowercase
+  lenBottom*/lenUpp*, and the m_* / geo_* / lim_* / eff_* / vel_* / dyn_* /
+  bkt_mimic_* families.
+  Section [15] at the bottom of this file is the single place where the two
+  meet: every contract name is defined there, either as an alias onto the
+  sheet-named property above it (no new number) or as a clearly labelled
+  ESTIMATE. Do not define a contract name anywhere else and do not let an
+  alias drift into a second, independent number.
+
+  ============================================================================
+  ROWS DELIBERATELY NOT DEFINED  (처리구분 = "Delete" in KinematicPara_new)
+  ============================================================================
+    distUcToFork, distForkToPanelBottom, distUcToForkUpRef,
+    distUcToForkUpPnt1, distUcToForkDownPnt2, distUcToForkDownPnt3,
+    angAttToContactSurface
+  They must NOT enter the URDF. If you find yourself needing one, the chain
+  is wrong — go back to the sheet.
+
+  ============================================================================
+  !!! TODO — VALUES THAT ARE **NOT** IN ANY SOURCE WE HOLD !!!
+  ============================================================================
+  Everything in section [13] and [14] is invented. Nothing below is measured.
+  Summary of every guess in this file, in one place:
+
+   T1  ALL joint limits (lower/upper) — section [13].
+       Source needed: cylinder stroke (retracted/extended) + the pin geometry
+       already in section [5]/[6], OR the calibration videos at
+       SharePoint .../Kinematic/260801/CalibrationVideo/ (7 clips,
+       Chassis/Boom/Arm/Bucket/Travel/Tilt/Rotator, 3.03 GB).
+       The Length-Kinematic deck contains ZERO joint ranges — confirmed by
+       full 13-page extraction.
+       WORST OF ALL: jntBkt* (bucket_joint, the output link about the bucket
+       pin) and jntConnRod* (conn_rod_joint, the cut member of the 4-bar) have
+       no source AND no near-miss row to rename — the sheet has no bucket or
+       conn-rod angle of any kind. They are pure invention, see the per-block
+       assumptions in section [13].
+   T2  ALL effort limits — section [13]. Source needed: hydraulic cylinder
+       bore/rod diameter + relief pressure from the ECR88 service manual,
+       or Volvo's published digging/tearout forces.
+   T3  ALL velocity limits — section [13]. Source needed: Volvo ECR88D spec
+       sheet (swing speed, cycle times) or measured telemetry.
+   T4  ALL masses — section [14]. Source needed: ECR88 3D model (Olivia) —
+       per-part volume x material density — or Volvo part weights.
+       BOTH the per-link split AND the total are guesses; the split is not
+       normalised to any total. See T10 and the method note in section [14].
+       The m_* family (section [15], one entry per link the URDF actually
+       emits) is AUTHORITATIVE; the older mass_* family in section [14] is
+       kept only as an alias onto it so the two can never disagree again.
+   T5  ALL inertia tensors — section [14]. Currently computed by the
+       bounding-box solid approximation in ecr88_inertia.xacro from the
+       estimated masses + estimated box dims. Replace with real tensors from
+       the CAD model. Slide-2 row 30 of the calibration deck lists
+       "CalibInertialTensor ... (TBD)" — upstream has not measured it either.
+   T6  Boundary box HEIGHTS (LenBottomZ_est, LenUppZ_est) — section [9].
+       The sheet gives box ORIGINS and X/Y sizes but no Z size. Derived, see
+       inline assumption.
+   T7  Joint axis directions (<axis xyz>) are NOT in any source — the X/Y/Z
+       arrows exist only as figure labels on non-extractable slides. They are
+       asserted in ecr88_macros.xacro, not here, but they are equally a guess.
+   T8  Bkt IMU mount offset — the deck offers "On Link / On Bkt" as a config
+       choice and gives no offset for either. See section [3].
+   T9  Suction plate footprint LenSDX / LenSDY are literally 0 in the source
+       for ECR88 (DX650 has 0.7 x 2.0). Treated as "not measured", NOT as a
+       zero-size plate. See section [11].
+  T10  mass_total_reference (8500 kg, section [14]) — a RECALLED Volvo ECR88(D)
+       brochure "operating weight", NOT read out of any document we hold.
+       `grep -rn '8\.5|8500|weight|중량' resources/` finds no operating-weight
+       row in any of the three source extracts. It is an ESTIMATE like every
+       other number in [14], it is NOT a datum the split is normalised to, and
+       it MUST be confirmed against the real ECR88(D) spec sheet (or simply
+       deleted) before anyone cites a machine weight from this asset.
+  T11  Primitive placeholder geometry geo_* — section [15][D]. The collision /
+       visual primitives need cross-section dimensions (boom radius, track
+       width, pad thickness, ...) that no source we hold contains. Two of them
+       are DERIVATIONS from measured numbers (geo_house_h from the T6 height
+       derivation, geo_pad_x/geo_pad_y from the T9 stand-in); the rest are
+       invented. They vanish the moment real meshes land (use_meshes = true),
+       but until then they also feed the inertia tensors (T5), so a wrong
+       radius is a wrong tensor.
+
+  ============================================================================
+  KNOWN SOURCE CONFLICTS (resolved in favour of KinematicPara_new, logged here)
+  ============================================================================
+   C1  `old` sheet vs KinematicPara_new rounding:
+         LenBm  3.551 vs lenBm1 3.55 | LenAm 1.699 vs lenArm 1.7
+         LenBktInp 0.423 vs lenInpLink 0.42
+         LenBktConn 0.402 vs lenConnRod 0.4
+         LenBktGrnd 0.259 vs lenGndLink 0.2597
+       -> KinematicPara_new is the release value. Used.
+   C2  Length-Kinematic deck vs KinematicPara_new on the GNSS frames:
+         deck distAntMainToChs (0.575,-0.08,-1.398) vs sheet (0.57,-0.087,-1.416)
+         deck distAntMainToAntAux (0.678,0.958,0.001) vs sheet (0.682,0.959,0)
+       -> sheet used. The deck shows the MC1->X1 derivation; the sheet shows
+          the value actually shipped. Do not "fix" the sheet with deck maths.
+   C3  The deck asserts "lenToCylSmlBkt is the same value as lenGndLink".
+       In the release sheet lenToCylSmlBkt = 0.42 and lenGndLink = 0.2597,
+       so that is false as written. Note that lenToCylSmlBkt (0.42) ==
+       lenInpLink (0.42) exactly, so the deck note is most likely a typo for
+       lenInpLink. NOT asserted — flagged. Verify before trusting the 4-bar.
+   C4  `old` sheet row 31 maps Len1BktX = 0.256 -> lenToCylSmlBkt, but
+       KinematicPara_new says lenToCylSmlBkt = 0.42. Unresolved. Same warning
+       as C3: the bucket linkage is the least trustworthy part of this file.
+   C5  distTiltMntToTilt: `old` gives LenTRX 0.221 / LenTRZ -0.442,
+       KinematicPara_new gives (0.28, 0, -0.22) and distRotToAtt Z -0.2615.
+       Note -0.22 + -0.2615 = -0.4815 ~ LenTRZ -0.442 but NOT equal. The
+       release sheet re-split the TR chain across two frames. Used as-is.
+   C6  angTiltMntToTilt: `old` AlphaTR1 = 0.0339 rad (1.94 deg),
+       KinematicPara_new = pi/180*1.736. Release value used.
+
+  ============================================================================
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ecr88_params">
+
+  <!-- ========================================================================
+       [1] BUILD FLAGS
+       ======================================================================== -->
+
+  <!-- Meshes do not exist yet (Olivia holds the ECR88 3D model). While false,
+       every link renders/collides as a primitive derived from the boundary
+       numbers in section [9] and the link lengths in section [5].
+       When the meshes land: flip this to true, drop the files into
+       assets/ecr88/meshes/{visual,collision}/ and nothing else changes. -->
+  <xacro:property name="use_meshes"            value="false"/>
+  <xacro:property name="mesh_dir"              value="package://xpanner_sim/assets/ecr88/meshes"/>
+  <xacro:property name="mesh_ext"              value=".obj"/>
+
+  <!-- Collision primitives are capsules/boxes sized from len* when true.
+       Isaac's URDF importer is happier with convex primitives than with
+       concave meshes, so keep this true even after use_meshes flips. -->
+  <xacro:property name="collision_from_primitives" value="true"/>
+
+  <!-- Emit the Probe / ContactSurface / Ant* frames as zero-mass fixed links.
+       ContactSurface is the TCP we publish to ROS 2. -->
+  <xacro:property name="publish_tool_frames"   value="true"/>
+  <xacro:property name="tcp_frame"             value="contact_surface"/>
+
+  <!-- ========================================================================
+       [2] MACHINE VARIANT SELECTOR
+       See section [12] for the values each variant switches.
+       ======================================================================== -->
+  <!-- One of:
+         ECR88_KIJANG              = KinematicPara_new col "ECR88 기장"     (THIS BUILD)
+         ECR88_US1_2P1M            = KinematicPara_new col "ECR88 2.1m 미국#1"
+         ECR88_US1_2P1M_NEWSUCTION = KinematicPara_new col "... 신규흡착기"   -->
+  <xacro:property name="machine_variant"       value="ECR88_KIJANG"/>
+
+  <!-- ========================================================================
+       [3] MACHINE CONFIGURATION OPTIONS
+       Source: Length Kinematic Measurement_ProductionV1.pptx slide 2
+       ("Machine Model" screen). These are Enable/Disable switches on the HMI,
+       reproduced here so the URDF matches the tablet configuration.
+       ======================================================================== -->
+  <xacro:property name="cfg_machine_model"     value="ECR88"/>
+  <xacro:property name="cfg_boom"              value="3.5m_standard"/>
+  <!-- lenBm2 = 0 in this build => the second boom segment is absent.
+       Keep the link as a zero-length fixed joint so the chain indices stay
+       stable across variants; do not delete it from the tree. -->
+  <xacro:property name="cfg_dual_boom_enable"  value="false"/>
+  <!-- BoomSwing sensor mounted on BmMnt. distBmMntToBm1 is non-zero ONLY when
+       this is true; it is (0,0,0) here. -->
+  <xacro:property name="cfg_boomswing_sensor_on_bmmnt" value="false"/>
+  <xacro:property name="cfg_tilt_coupler_enable"       value="false"/>
+  <xacro:property name="cfg_tilt_rotator_model"        value="JK"/>
+  <!-- T8: "On Link" or "On Bkt". The deck gives NO mounting offset for either
+       option, so the IMU frame is currently coincident with its parent. -->
+  <xacro:property name="cfg_bkt_imu_mount"     value="On Link"/>
+
+  <!-- ========================================================================
+       [4] FRAME OFFSETS  (dist*)  — KinematicPara_new, ECR88 기장
+       These become <joint><origin xyz="..."/> entries, parent->child.
+       ======================================================================== -->
+
+  <!-- chassis (house) -> boom mount.
+       Y is negative: MC1 measures "Roll Length" +0.159 and X1 PanelLift
+       applies *(-1). X (= MC1 "Pitch Length") is NOT negated. -->
+  <xacro:property name="distChsToBmMntX"       value="0.94"/>
+  <xacro:property name="distChsToBmMntY"       value="-0.15"/>
+  <xacro:property name="distChsToBmMntZ"       value="0.0"/>
+
+  <!-- boom mount -> boom1. Exists as a parameter purely to carry the
+       BoomSwing sensor option (cfg_boomswing_sensor_on_bmmnt). Zero here. -->
+  <xacro:property name="distBmMntToBm1X"       value="0.0"/>
+  <xacro:property name="distBmMntToBm1Y"       value="0.0"/>
+  <xacro:property name="distBmMntToBm1Z"       value="0.0"/>
+
+  <!-- arm -> input link (start of the bucket 4-bar).
+       NOTE the non-zero Z: the input-link pin is NOT coaxial with the arm
+       plane. A planar-linkage assumption is wrong by 18.5 mm.
+       X is variant-dependent (1.441 / 1.841) -> section [12]. -->
+  <xacro:property name="distArmToInpLinkY"     value="0.0"/>
+  <xacro:property name="distArmToInpLinkZ"     value="0.0185"/>
+
+  <!-- output link -> tilt mount. Coincident frames, kept for chain clarity. -->
+  <xacro:property name="distOutpLinkToTiltMntX" value="0.0"/>
+  <xacro:property name="distOutpLinkToTiltMntY" value="0.0"/>
+  <xacro:property name="distOutpLinkToTiltMntZ" value="0.0"/>
+
+  <!-- tilt mount -> tilt. The deck labels the tiltrotator "Tilt = Rot",
+       i.e. tilt and rotate axes intersect, so there is NO tilt->rot offset
+       parameter at all. The rot joint origin is (0,0,0) by construction. -->
+  <xacro:property name="distTiltMntToTiltX"    value="0.28"/>
+  <xacro:property name="distTiltMntToTiltY"    value="0.0"/>
+  <xacro:property name="distTiltMntToTiltZ"    value="-0.22"/>
+
+  <!-- rotator -> attachment (Att. = Attachment Centre Of Rotation) -->
+  <xacro:property name="distRotToAttX"         value="0.0"/>
+  <xacro:property name="distRotToAttY"         value="0.0"/>
+  <xacro:property name="distRotToAttZ"         value="-0.2615"/>
+
+  <!-- attachment -> probe -> contact surface (panel-lift suction tool).
+       The sheet is internally consistent here:
+         distAttToContactSurface = distAttToProbe + distProbeToContactSurface
+         X: 0.35 + 0.1   = 0.45
+         Z: -0.572 + -0.264 = -0.836
+       distAttToContactSurface is kept as its own property (it is a sheet row
+       and the HMI displays it) but the macros build the chain additively, so
+       the two agree by construction. All three are variant-dependent under
+       the new-suction variant -> section [12]. -->
+  <xacro:property name="distAttToProbeY"       value="0.0"/>
+  <xacro:property name="distProbeToContactSurfaceY" value="0.0"/>
+  <xacro:property name="distAttToContactSurfaceY"   value="0.0"/>
+
+  <!-- ==================================================================
+       Cylinder pin attachment points (dist*Cyl*).
+       Needed ONLY if cylinders are modelled as separate links or a
+       mimic/closed-chain solver is used. They are static mounting-pin
+       offsets, NOT strokes — there are no strokes in any source (T1).
+       WARNING: the reference pose these are measured from is slide 10 of the
+       Length-Kinematic deck, which is 100% pictorial and produced no text.
+       Do not trust the cylinder chain until that slide is opened in the
+       original binary.
+       ================================================================== -->
+  <xacro:property name="distCylLrgBm1X"        value="0.272"/>
+  <xacro:property name="distCylLrgBm1Y"        value="0.0"/>
+  <xacro:property name="distCylLrgBm1Z"        value="0.391"/>
+
+  <xacro:property name="distCylSmlBm1X"        value="1.715"/>
+  <xacro:property name="distCylSmlBm1Y"        value="0.0"/>
+  <xacro:property name="distCylSmlBm1Z"        value="0.58"/>
+
+  <!-- Bm2 option inactive in this build (cfg_dual_boom_enable = false). -->
+  <xacro:property name="distCylLrgBm2X"        value="0.0"/>
+  <xacro:property name="distCylLrgBm2Y"        value="0.0"/>
+  <xacro:property name="distCylLrgBm2Z"        value="0.0"/>
+
+  <xacro:property name="distCylSmlBm2X"        value="0.0"/>
+  <xacro:property name="distCylSmlBm2Y"        value="0.0"/>
+  <xacro:property name="distCylSmlBm2Z"        value="0.0"/>
+
+  <xacro:property name="distCylLrgArmX"        value="-1.508"/>
+  <xacro:property name="distCylLrgArmY"        value="0.0"/>
+  <xacro:property name="distCylLrgArmZ"        value="1.08"/>
+
+  <!-- ========================================================================
+       [5] LINK LENGTHS  (len*)  — KinematicPara_new, ECR88 기장
+       ======================================================================== -->
+  <xacro:property name="lenBm1"                value="3.55"/>
+  <!-- lenBm2 = 0 => dual-boom segment absent. Emitted as a zero-length fixed
+       joint, not deleted, so link indices are variant-stable. -->
+  <xacro:property name="lenBm2"                value="0.0"/>
+  <!-- lenArm is variant-dependent (1.7 / 2.1) -> section [12]. -->
+
+  <!-- Bucket 4-bar: input link -> connecting rod -> output link, closed by
+       the ground link on the arm. See C3/C4 before trusting this. -->
+  <xacro:property name="lenInpLink"            value="0.42"/>
+  <xacro:property name="lenConnRod"            value="0.4"/>
+  <xacro:property name="lenOutpLink"           value="0.33"/>
+  <xacro:property name="lenGndLink"            value="0.2597"/>
+
+  <!-- ==================================================================
+       Cylinder-side lengths. 처리구분 "Calculated by Mango" means these are
+       derived by the controller from the pin offsets above, not measured
+       independently. Kept so the URDF and the controller agree numerically.
+       ================================================================== -->
+  <xacro:property name="lenToCylLrgBm1"        value="0.476"/>   <!-- Calculated by Mango -->
+  <xacro:property name="lenToCylSmlBm1"        value="1.81"/>    <!-- Calculated by Mango -->
+  <xacro:property name="lenToCylLrgBm2"        value="0.0"/>     <!-- Calculated by Mango, Bm2 inactive -->
+  <xacro:property name="lenToCylSmlBm2"        value="0.0"/>     <!-- Calculated by Mango, Bm2 inactive -->
+  <xacro:property name="lenToCylLrgArm"        value="1.855"/>   <!-- Calculated by Mango -->
+  <xacro:property name="lenToCylSmlArm"        value="0.53"/>
+  <!-- lenToCylSmlArm2, lenToCylLrgBkt, lenToCylLrgBkt2 are variant-dependent
+       -> section [12]. -->
+  <xacro:property name="lenToCylLrgBkt1"       value="0.394"/>
+  <!-- C3/C4: deck says this equals lenGndLink (0.2597) — it does not.
+       It equals lenInpLink (0.42) exactly. Flagged, not resolved. -->
+  <xacro:property name="lenToCylSmlBkt"        value="0.42"/>
+
+  <!-- ========================================================================
+       [6] ANGLES  (ang*)  — KinematicPara_new, ECR88 기장
+       Written in the sheet's own `pi/180*deg` form inside a xacro expression.
+       ALL of these are fixed MOUNTING offsets. NONE of them is a joint limit
+       (the only exception is angForkUpLimit, section [10]).
+       ======================================================================== -->
+  <xacro:property name="angArmToGndLink"       value="${pi/180*4.1}"/>      <!-- Calculated by Mango -->
+  <xacro:property name="angOutpLinkToTiltMnt"  value="0.0"/>
+  <!-- +1.736 deg. A genuine non-zero rpy term on the tilt-mount joint. -->
+  <xacro:property name="angTiltMntToTilt"      value="${pi/180*1.736}"/>
+  <xacro:property name="angRotToAtt"           value="0.0"/>
+  <xacro:property name="angAttToProbe"         value="0.0"/>                <!-- Calculated by Mango -->
+  <xacro:property name="angProbeToContactSurface" value="0.0"/>             <!-- Calculated by Mango -->
+  <!-- angAttToContactSurface: 처리구분 = Delete. NOT DEFINED. -->
+
+  <!-- Cylinder mounting angles ("Calculated by Mango"). Same slide-10
+       reference-pose caveat as the cylinder offsets in section [4]. -->
+  <xacro:property name="angCylLrgBm1"          value="${pi/180*55.2}"/>
+  <xacro:property name="angCylSmlBm1"          value="${-pi/180*18.7}"/>
+  <xacro:property name="angCylLrgBm2"          value="0.0"/>
+  <xacro:property name="angCylSmlBm2"          value="0.0"/>
+  <xacro:property name="angCylLrgArm"          value="${-pi/180*144.4}"/>
+  <xacro:property name="angCylSmlArm"          value="${-pi/180*150}"/>
+  <!-- angCylLrgBkt is variant-dependent (-165.8 / -164.1 deg) -> section [12]. -->
+
+  <!-- ========================================================================
+       [7] GNSS ANTENNA POSITIONS
+       Source: KinematicPara_new (release values).
+       Raw Leica MC1 readings, for traceability only, NOT used:
+         Left  GPS (= AntMain)  X  0.103   Y  1.038   Z  1.346
+         Right GPS (= AntAux)   X -0.575   Y  0.080   Z  1.345
+       MC1 -> X1 PanelLift applies *(-1) on all three distAntMainToChs axes,
+       plus a +0.053 m bolt-height correction on Z (deck call-outs 50mm+3mm).
+       distAntMainToAntAux is a pure difference of the two GPS readings with
+       NO sign flip.
+       See C2: the deck's arithmetic lands 5-18 mm away from these release
+       values. The release values win.
+       ======================================================================== -->
+
+  <!-- AntMain -> Chassis. Invert this vector to place the antenna link on the
+       house: p_ant_in_chs = -distAntMainToChs. -->
+  <xacro:property name="distAntMainToChsX"     value="0.57"/>
+  <xacro:property name="distAntMainToChsY"     value="-0.087"/>
+  <xacro:property name="distAntMainToChsZ"     value="-1.416"/>
+
+  <!-- AntMain -> AntAux. Dual-antenna heading baseline: |(0.682,0.959,0)|
+       = 1.1797 m. Expressed relative to AntMain, NOT to the chassis. -->
+  <xacro:property name="distAntMainToAntAuxX"  value="0.682"/>
+  <xacro:property name="distAntMainToAntAuxY"  value="0.959"/>
+  <xacro:property name="distAntMainToAntAuxZ"  value="0.0"/>
+
+  <!-- ========================================================================
+       [8] (reserved)
+       ======================================================================== -->
+
+  <!-- ========================================================================
+       [9] BOUNDARY BOX  (LenBottom* / LenUpp*)
+       Source: sheet `old` [hidden], ECR88 column. There is NO equivalent row
+       in KinematicPara_new, so this is the only geometry source we have and
+       it is used knowingly.
+       Purpose: primitive collision boxes for the undercarriage and the upper
+       structure while meshes are missing (use_meshes = false).
+       *X1/*Y1/*Z1 are the box ORIGIN (min corner) in the chassis frame;
+       *X/*Y are the box SIZE. Names kept verbatim including the source's own
+       LenUppX1-vs-LenUpX inconsistency.
+       ======================================================================== -->
+
+  <!-- Undercarriage / lower boundary -->
+  <xacro:property name="LenBottomX1"           value="-0.44"/>
+  <xacro:property name="LenBottomY1"           value="-1.08"/>
+  <xacro:property name="LenBottomZ1"           value="-1.445"/>
+  <xacro:property name="LenBottomX"            value="2.82"/>
+  <xacro:property name="LenBottomY"            value="2.32"/>
+
+  <!-- Upper structure (house) / upper boundary -->
+  <xacro:property name="LenUppX1"              value="-0.41"/>
+  <xacro:property name="LenUppY1"              value="-1.01"/>
+  <xacro:property name="LenUppZ1"              value="-0.67"/>
+  <xacro:property name="LenUpX"                value="2.28"/>
+  <xacro:property name="LenUpY"                value="2.46"/>
+
+  <!-- T6 ESTIMATE. The sheet has no LenBottomZ (height). Assumption: the top
+       of the undercarriage is the bottom of the upper structure, i.e.
+       LenUppZ1 - LenBottomZ1 = -0.67 - (-1.445) = 0.775.
+       This is a DERIVATION from two measured numbers, not a measurement.
+       (Declared after LenUppZ1 so the file does not depend on xacro's lazy
+       property evaluation.) -->
+  <xacro:property name="LenBottomZ_est"        value="${LenUppZ1 - LenBottomZ1}"/>
+  <!-- T6 ESTIMATE. The sheet has no LenUpZ (height). Assumption: the cab roof
+       sits one bolt-height (0.053, the deck's own antenna correction) below
+       the antenna mounting plane, and the antenna plane is at
+       -distAntMainToChsZ = +1.416 in the chassis frame. So
+         height = (1.416 - 0.053) - (-0.67) = 2.033.
+       Pure inference. Replace from the CAD model. -->
+  <xacro:property name="LenUpZ_est"            value="${(-distAntMainToChsZ - 0.053) - LenUppZ1}"/>
+
+  <!-- ========================================================================
+       [10] PANELLIFT / FORK
+       Sources are mixed — read the per-row comment:
+         dist*/ang* rows  -> KinematicPara_new, 처리구분 "Update after
+                             Calibration". These MUST stay xacro parameters;
+                             the calibration procedure overwrites them.
+         LenPL* / AlphaPL* -> sheet `old` [hidden], ECR88 column. Reference
+                             measurements, no release row exists.
+       ======================================================================== -->
+
+  <!-- 처리구분 = Update after Calibration. Do NOT hardcode downstream. -->
+  <xacro:property name="distUcToForkBackX"     value="1.988"/>
+  <xacro:property name="distUcToForkBackY"     value="0.0"/>
+  <xacro:property name="distUcToForkBackZ"     value="-0.66"/>
+
+  <!-- 처리구분 = Update after Calibration. -->
+  <xacro:property name="distForkBackToPanelTopX" value="1.0165"/>
+  <xacro:property name="distForkBackToPanelTopY" value="0.0"/>
+  <xacro:property name="distForkBackToPanelTopZ" value="0.0"/>
+
+  <!-- 처리구분 = Update after Calibration.
+       The ONE row in the whole parameter set that is genuinely a joint LIMIT
+       rather than a mounting offset: -16 deg fork up-limit. -->
+  <xacro:property name="angForkUpLimit"        value="${-pi/180*16}"/>
+
+  <!-- Fork / panel geometry, sheet `old`, reference only -->
+  <xacro:property name="LenPLX"                value="1.086"/>
+  <xacro:property name="LenPLY"                value="-0.385"/>
+  <xacro:property name="LenPLZ"                value="-0.915"/>
+  <xacro:property name="LenPLWidth"            value="1.2"/>     <!-- panel width -->
+  <!-- Source note: "현장 패널 높이(시험 시 포크 높이로 임의)" — the field panel
+       height was set arbitrarily to the fork height during the test. So this
+       is a TEST value, not a product dimension. -->
+  <xacro:property name="LenPanelHeight"        value="1.085"/>
+  <xacro:property name="LenPL5Width"           value="0.405"/>
+  <xacro:property name="LenPLX2"               value="0.3"/>
+  <xacro:property name="LenPLZ2"               value="1.08"/>
+  <xacro:property name="LenPLX5"               value="1.015"/>
+  <xacro:property name="LenPLZ5"               value="0.287"/>
+  <xacro:property name="LenPLX7"               value="0.13"/>
+  <xacro:property name="LenPLZ7"               value="0.475"/>
+  <!-- Already in radians in the source (protractor readings 74.5 / 15.7 deg).
+       NOT re-converted — 1.3002 rad = 74.50 deg, 0.274 rad = 15.70 deg, both
+       check out against the source's own note. -->
+  <xacro:property name="AlphaPL1"              value="1.3002"/>  <!-- fork upper support bar tilt -->
+  <xacro:property name="AlphaPL2"              value="0.274"/>   <!-- fork lower pallet tilt -->
+
+  <!-- ========================================================================
+       [11] SUCTION PLATE
+       Source: sheet `old` [hidden], ECR88 column.
+       ======================================================================== -->
+  <!-- T9: the ECR88 column records 0 for both plate dimensions (DX650 records
+       0.7 x 2.0). A zero-area suction plate is physically meaningless, so
+       these are treated as NOT MEASURED, and the *_est values below are used
+       for the visual/collision box. Get the real footprint from the X1
+       PanelLift tool drawing. -->
+  <xacro:property name="LenSDX"                value="0.0"/>     <!-- suction plate width  — 0 = not measured -->
+  <xacro:property name="LenSDY"                value="0.0"/>     <!-- suction plate height — 0 = not measured -->
+  <!-- This one IS real: adapter height + adapter->plate-bottom height. -->
+  <xacro:property name="LenSDZ"                value="-0.84"/>
+  <!-- ESTIMATE, used only when LenSDX/LenSDY are 0. Assumption: the plate is
+       sized to the panel it lifts, so it is LenPLWidth (1.2) wide and
+       LenPanelHeight (1.085) tall. Purely a stand-in for rendering. -->
+  <xacro:property name="LenSDX_est"            value="${LenPLWidth}"/>
+  <xacro:property name="LenSDY_est"            value="${LenPanelHeight}"/>
+  <!-- Sanity cross-check (not used, kept for the reviewer): the suction stack
+       LenSDZ = -0.84 sits within 4 mm of distAttToContactSurfaceZ = -0.836.
+       Two independent measurements of the same physical distance. Good sign. -->
+
+  <!-- ========================================================================
+       [12] VARIANT-DEPENDENT VALUES
+       Defined exactly once, in whichever branch matches machine_variant, with
+       scope="global" so they are visible to the rest of the document. No
+       property is redefined, so xacro emits no redefinition warnings.
+
+       KinematicPara_new columns, side by side:
+         parameter           기장      2.1m 美#1   2.1m 美#1 신규흡착기
+         lenArm              1.7       2.1        2.1
+         distArmToInpLink X  1.441     1.841      1.841
+         lenToCylSmlArm2     2.175     2.572      2.572
+         lenToCylLrgBkt      1.525     1.532      1.532
+         lenToCylLrgBkt2     1.441     1.841      1.841
+         angCylLrgBkt       -165.8deg -164.1deg  -164.1deg
+         distAttToProbe      0.35/-0.572          0.255/-0.57
+         distProbeToContact  0.1/-0.264           0.1/-0.262
+         distAttToContact    0.45/-0.836          0.355/-0.832
+         distUcToForkBack    1.988/-0.66  (zeros) 1.523/0
+         distForkBackToPanelTop 1.0165    (zeros) 2.608/0
+       (the 美#1 column zeroes the fork rows; that column's fork geometry has
+        not been measured, so the fork chain is only valid for 기장 and
+        신규흡착기 — see the guard comment in the US1 branch.)
+       ======================================================================== -->
+
+  <xacro:if value="${machine_variant == 'ECR88_KIJANG'}">
+    <xacro:property name="lenArm"              value="1.7"     scope="global"/>
+    <xacro:property name="distArmToInpLinkX"   value="1.441"   scope="global"/>
+    <xacro:property name="lenToCylSmlArm2"     value="2.175"   scope="global"/>
+    <xacro:property name="lenToCylLrgBkt"      value="1.525"   scope="global"/>
+    <xacro:property name="lenToCylLrgBkt2"     value="1.441"   scope="global"/>
+    <xacro:property name="angCylLrgBkt"        value="${-pi/180*165.8}" scope="global"/>
+    <xacro:property name="distAttToProbeX"     value="0.35"    scope="global"/>
+    <xacro:property name="distAttToProbeZ"     value="-0.572"  scope="global"/>
+    <xacro:property name="distProbeToContactSurfaceX" value="0.1"    scope="global"/>
+    <xacro:property name="distProbeToContactSurfaceZ" value="-0.264" scope="global"/>
+    <xacro:property name="distAttToContactSurfaceX"   value="0.45"   scope="global"/>
+    <xacro:property name="distAttToContactSurfaceZ"   value="-0.836" scope="global"/>
+    <xacro:property name="fork_chain_valid"    value="true"    scope="global"/>
+  </xacro:if>
+
+  <xacro:if value="${machine_variant == 'ECR88_US1_2P1M'}">
+    <xacro:property name="lenArm"              value="2.1"     scope="global"/>
+    <xacro:property name="distArmToInpLinkX"   value="1.841"   scope="global"/>
+    <xacro:property name="lenToCylSmlArm2"     value="2.572"   scope="global"/>
+    <xacro:property name="lenToCylLrgBkt"      value="1.532"   scope="global"/>
+    <xacro:property name="lenToCylLrgBkt2"     value="1.841"   scope="global"/>
+    <xacro:property name="angCylLrgBkt"        value="${-pi/180*164.1}" scope="global"/>
+    <xacro:property name="distAttToProbeX"     value="0.35"    scope="global"/>
+    <xacro:property name="distAttToProbeZ"     value="-0.572"  scope="global"/>
+    <xacro:property name="distProbeToContactSurfaceX" value="0.1"    scope="global"/>
+    <xacro:property name="distProbeToContactSurfaceZ" value="-0.264" scope="global"/>
+    <xacro:property name="distAttToContactSurfaceX"   value="0.45"   scope="global"/>
+    <xacro:property name="distAttToContactSurfaceZ"   value="-0.836" scope="global"/>
+    <!-- The 美#1 column zeroes distUcToForkBack and distForkBackToPanelTop.
+         Zero is "not measured", not "coincident", so the fork chain must be
+         suppressed for this variant rather than built at the origin. -->
+    <xacro:property name="fork_chain_valid"    value="false"   scope="global"/>
+  </xacro:if>
+
+  <xacro:if value="${machine_variant == 'ECR88_US1_2P1M_NEWSUCTION'}">
+    <xacro:property name="lenArm"              value="2.1"     scope="global"/>
+    <xacro:property name="distArmToInpLinkX"   value="1.841"   scope="global"/>
+    <xacro:property name="lenToCylSmlArm2"     value="2.572"   scope="global"/>
+    <xacro:property name="lenToCylLrgBkt"      value="1.532"   scope="global"/>
+    <xacro:property name="lenToCylLrgBkt2"     value="1.841"   scope="global"/>
+    <xacro:property name="angCylLrgBkt"        value="${-pi/180*164.1}" scope="global"/>
+    <!-- New suction device: shorter stand-off, marginally shorter stack. -->
+    <xacro:property name="distAttToProbeX"     value="0.255"   scope="global"/>
+    <xacro:property name="distAttToProbeZ"     value="-0.57"   scope="global"/>
+    <xacro:property name="distProbeToContactSurfaceX" value="0.1"    scope="global"/>
+    <xacro:property name="distProbeToContactSurfaceZ" value="-0.262" scope="global"/>
+    <xacro:property name="distAttToContactSurfaceX"   value="0.355"  scope="global"/>
+    <xacro:property name="distAttToContactSurfaceZ"   value="-0.832" scope="global"/>
+    <xacro:property name="fork_chain_valid"    value="true"    scope="global"/>
+  </xacro:if>
+
+  <!-- ========================================================================
+       [13] !!! NOT IN ANY SOURCE — JOINT LIMITS / EFFORT / VELOCITY !!!
+       ========================================================================
+       EVERY NUMBER IN THIS SECTION IS INVENTED. Read T1/T2/T3 at the top.
+
+       Why there is nothing to copy:
+         * KinematicPara_new has no min/max angle rows at all.
+         * The Length Kinematic deck (13 pages, fully extracted) contains zero
+           joint ranges, zero cylinder strokes, zero retracted/extended
+           lengths. Its only angle, angTiltMntToTilt = +1.736 deg, is a
+           mounting offset.
+         * The calibration deck's only angles are procedural gates
+           ("Roll = 0 deg", "Pitch > 5 deg", "Swing 180 -> 90").
+       The one real limit we hold is angForkUpLimit, in section [10].
+
+       Values below are typical-for-class figures for an 8.5 t short-swing
+       excavator with a JK tiltrotator, chosen so the asset is drivable in
+       Isaac without flying apart. They are NOT the ECR88's ranges.
+       Written in degrees so they are obviously human-chosen, not measured.
+
+       HOW TO REPLACE: pull the cylinder strokes, then close
+       cylinder-length -> joint-angle with the pin offsets already in
+       sections [4]/[5]/[6]; or digitise the CalibrationVideo/ clips.
+       ======================================================================== -->
+  <xacro:property name="limits_are_estimates"  value="true"/>
+
+  <!-- House swing about chassis Z. Physically endless (slew ring). Modelled
+       as `continuous` when this flag is true; the lo/hi below exist only so a
+       revolute fallback is available for solvers that dislike continuous. -->
+  <xacro:property name="jntSwingContinuous"    value="true"/>
+  <xacro:property name="jntSwingLower"         value="${-pi}"/>          <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntSwingUpper"         value="${pi}"/>           <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntSwingEffort"        value="20000.0"/>         <!-- ESTIMATE (T2) N*m -->
+  <xacro:property name="jntSwingVelocity"      value="1.0"/>             <!-- ESTIMATE (T3) rad/s, ~9.5 rpm class figure -->
+
+  <!-- Boom swing (offset boom about BmMnt Z). ECR88 is a boom-swing machine;
+       range is asymmetric on real machines. -->
+  <xacro:property name="jntBoomSwingLower"     value="${-pi/180*70}"/>   <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntBoomSwingUpper"     value="${ pi/180*65}"/>   <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntBoomSwingEffort"    value="30000.0"/>         <!-- ESTIMATE (T2) -->
+  <xacro:property name="jntBoomSwingVelocity"  value="0.35"/>            <!-- ESTIMATE (T3) -->
+
+  <!-- Boom 1 pitch -->
+  <xacro:property name="jntBm1Lower"           value="${-pi/180*55}"/>   <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntBm1Upper"           value="${ pi/180*45}"/>   <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntBm1Effort"          value="60000.0"/>         <!-- ESTIMATE (T2) -->
+  <xacro:property name="jntBm1Velocity"        value="0.5"/>             <!-- ESTIMATE (T3) -->
+
+  <!-- Boom 2. lenBm2 = 0 and cfg_dual_boom_enable = false, so this joint is
+       emitted fixed. Limits kept at zero deliberately — not an estimate. -->
+  <xacro:property name="jntBm2Lower"           value="0.0"/>
+  <xacro:property name="jntBm2Upper"           value="0.0"/>
+  <xacro:property name="jntBm2Effort"          value="0.0"/>
+  <xacro:property name="jntBm2Velocity"        value="0.0"/>
+
+  <!-- Arm (stick) -->
+  <xacro:property name="jntArmLower"           value="${-pi/180*155}"/>  <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntArmUpper"           value="${-pi/180*15}"/>   <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntArmEffort"          value="40000.0"/>         <!-- ESTIMATE (T2) -->
+  <xacro:property name="jntArmVelocity"        value="0.6"/>             <!-- ESTIMATE (T3) -->
+
+  <!-- Bucket / input link — drives the 4-bar. NOTE: the 4-bar itself is a
+       closed chain; Isaac needs it broken with a mimic or a loop-closure
+       joint. These limits apply to the INPUT link only. -->
+  <xacro:property name="jntInpLinkLower"       value="${-pi/180*170}"/>  <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntInpLinkUpper"       value="${-pi/180*20}"/>   <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntInpLinkEffort"      value="25000.0"/>         <!-- ESTIMATE (T2) -->
+  <xacro:property name="jntInpLinkVelocity"    value="0.8"/>             <!-- ESTIMATE (T3) -->
+
+  <!-- ==================================================================
+       Bucket joint (= ecr88.urdf.xacro `bucket_joint`: output_link rotating
+       about the bucket pin, carrying the whole tiltrotator + tool stack).
+       WORSE THAN AN ESTIMATE-BY-ANALOGY: unlike every other block in this
+       section there is not even a near-miss row in KinematicPara_new to
+       rename — the sheet has NO bucket angle of any kind. Invented outright.
+       ASSUMPTION: an 8.5 t-class bucket curl sweeps ~180 deg, biased to the
+       curled side, so the tool hangs roughly vertical at zero. Taken as
+       -170 deg .. +10 deg about the +Y axis the URDF asserts (T7).
+       Effort/velocity are set EQUAL to the input-link block above on the
+       ground that both are ends of the SAME 4-bar driven by the SAME bucket
+       cylinder — that is a consistency argument, not a measurement.
+       ================================================================== -->
+  <xacro:property name="jntBktLower"           value="${-pi/180*170}"/>  <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntBktUpper"           value="${ pi/180*10}"/>   <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntBktEffort"          value="25000.0"/>         <!-- ESTIMATE (T2) same cylinder as jntInpLink -->
+  <xacro:property name="jntBktVelocity"        value="0.8"/>             <!-- ESTIMATE (T3) same cylinder as jntInpLink -->
+
+  <!-- ==================================================================
+       Connecting-rod joint (= ecr88.urdf.xacro `conn_rod_joint`). This is the
+       CUT member of the 4-bar: the dressing branch, visual only, with NO
+       actuator behind it. Same "no source, no renameable row" status as
+       jntBkt* above.
+       ASSUMPTION on the range: in the real linkage the conn-rod angle is not
+       free at all — it is fully determined by the loop closure, which URDF
+       cannot express. So the range here is deliberately UNCONSTRAINED
+       (+/-pi) rather than a fake tight range that would fight the USD loop
+       constraint once it is re-imposed. Re-impose the constraint (see the
+       MIMIC / closed-loop block in ecr88.urdf.xacro) and these limits become
+       irrelevant; leave it un-imposed and they are the only thing stopping
+       the dressing links from spinning.
+       ASSUMPTION on effort: an idler carries no drive torque, so the honest
+       value is 0 — but URDF/Isaac reject a zero effort limit, hence the 1.0
+       token below. Do NOT read a torque off this joint.
+       ================================================================== -->
+  <xacro:property name="jntConnRodLower"       value="${-pi}"/>          <!-- ESTIMATE (T1) unconstrained placeholder -->
+  <xacro:property name="jntConnRodUpper"       value="${ pi}"/>          <!-- ESTIMATE (T1) unconstrained placeholder -->
+  <xacro:property name="jntConnRodEffort"      value="1.0"/>             <!-- ESTIMATE (T2) token: idler, no actuator -->
+  <xacro:property name="jntConnRodVelocity"    value="1.0"/>             <!-- ESTIMATE (T3) follows the driven branch -->
+
+  <!-- ==================================================================
+       Bucket 4-bar mimic coefficients. input_link_joint carries
+       <mimic joint="bucket_joint" multiplier offset> because that is the only
+       loop coupling URDF can express. The TRUE 4-bar relation is NON-LINEAR,
+       so no multiplier/offset pair can be correct — 1.0 / 0.0 is chosen as
+       the identity (input link tracks the output link one-for-one), which is
+       the least-wrong linearisation near the mid-stroke pose and is obviously
+       a placeholder rather than a fitted number.
+       Fix by fitting to the real linkage, or better: drop the mimic and
+       re-impose the loop as a USD/PhysX constraint.
+       ================================================================== -->
+  <xacro:property name="jntBktMimicMultiplier" value="1.0"/>             <!-- ESTIMATE (T1) placeholder linearisation -->
+  <xacro:property name="jntBktMimicOffset"     value="0.0"/>             <!-- ESTIMATE (T1) placeholder linearisation -->
+
+  <!-- Tiltrotator tilt (JK). Typical +/-45 deg on this tiltrotator class. -->
+  <xacro:property name="jntTiltLower"          value="${-pi/180*45}"/>   <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntTiltUpper"          value="${ pi/180*45}"/>   <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntTiltEffort"         value="8000.0"/>          <!-- ESTIMATE (T2) -->
+  <xacro:property name="jntTiltVelocity"       value="0.6"/>             <!-- ESTIMATE (T3) -->
+
+  <!-- Tiltrotator rotate. Endless on the JK. Same continuous/revolute
+       treatment as the swing. -->
+  <xacro:property name="jntRotContinuous"      value="true"/>
+  <xacro:property name="jntRotLower"           value="${-pi}"/>          <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntRotUpper"           value="${pi}"/>           <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntRotEffort"          value="5000.0"/>          <!-- ESTIMATE (T2) -->
+  <xacro:property name="jntRotVelocity"        value="1.2"/>             <!-- ESTIMATE (T3) -->
+
+  <!-- Fork tilt. The UPPER bound is real (angForkUpLimit, section [10],
+       Update-after-Calibration). The lower bound is not in any source. -->
+  <xacro:property name="jntForkLower"          value="${-pi/180*90}"/>   <!-- ESTIMATE (T1) -->
+  <xacro:property name="jntForkUpper"          value="${angForkUpLimit}"/> <!-- from source -->
+  <xacro:property name="jntForkEffort"         value="15000.0"/>         <!-- ESTIMATE (T2) -->
+  <xacro:property name="jntForkVelocity"       value="0.3"/>             <!-- ESTIMATE (T3) -->
+
+  <!-- Travel (tracks). Not part of the kinematic sheet at all. -->
+  <xacro:property name="jntTrackEffort"        value="30000.0"/>         <!-- ESTIMATE (T2) -->
+  <xacro:property name="jntTrackVelocity"      value="10.0"/>            <!-- ESTIMATE (T3) rad/s at the sprocket -->
+
+  <!-- Joint damping/friction: no source whatsoever. Small non-zero values so
+       Isaac's articulation solver stays stable; tune against telemetry. -->
+  <xacro:property name="jnt_damping_default"   value="10.0"/>            <!-- ESTIMATE -->
+  <xacro:property name="jnt_friction_default"  value="1.0"/>             <!-- ESTIMATE -->
+
+  <!-- ========================================================================
+       [14] !!! NOT IN ANY SOURCE — MASS AND INERTIA !!!
+       ========================================================================
+       EVERY NUMBER IN THIS SECTION IS INVENTED. Read T4/T5 at the top.
+
+       No source we hold contains a single mass, centre of gravity or inertia
+       figure. The calibration deck explicitly marks its own inertial-tensor
+       calibration "(TBD)" at slide 2 row 30, so upstream has not measured it
+       either.
+
+       Method used, stated plainly so it can be audited:
+         1. BOTH the total AND the per-link split are guesses. Nothing here is
+            pinned to anything. The ~8.5 t figure in mass_total_reference
+            below is a RECALLED brochure number, not a sourced one (T10), and
+            no expression normalises the split to it.
+         2. The SPLIT across links is my judgement of typical excavator mass
+            distribution (roughly 45% undercarriage, 36% upper structure with
+            counterweight/engine/cab, 19% front linkage + tool). It is a
+            guess, link by link.
+         3. Because the split is NOT normalised, the per-link values sum to
+            whatever they sum to. mass_total_estimated below computes that sum
+            and mass_total_split_delta computes its distance from the recalled
+            8.5 t. Both exist so the discrepancy is visible and self-updating
+            instead of being asserted in a comment that can go stale — which
+            is exactly what the previous "pinned to 8.5 t" claim had done.
+         4. Inertia tensors are NOT listed here. ecr88_inertia.xacro derives
+            them with the solid-box approximation from these masses and the
+            boundary/length numbers. That is a second layer of approximation
+            on top of a guess — do not report simulated dynamics as
+            representative of the real machine until T4/T5 are closed.
+
+       WHICH SET IS AUTHORITATIVE: the m_* family in section [15][C], one
+       entry per link ecr88.urdf.xacro actually emits. The mass_* names in
+       this section are the older, parallel set; they are now DERIVED from
+       m_* (see below) so the two cannot drift apart. Three of them
+       (mass_boom_mount, mass_bm2, mass_fork) have no m_* counterpart because
+       the current URDF emits no massive link for them — they keep their own
+       ESTIMATE and are flagged as such.
+
+       Massless-by-design (pure coordinate frames given the marker mass
+       m_marker = 0.01 kg, small enough to be dynamically irrelevant and large
+       enough that neither the URDF importer nor PhysX trips over it):
+       boom_mount, the three cyl_* anchors, ant_main, ant_aux.
+       ======================================================================== -->
+  <xacro:property name="masses_are_estimates"  value="true"/>
+  <!-- ESTIMATE (T10). NOT a published figure we hold: this is a recalled Volvo
+       ECR88(D) brochure operating weight, and it is NOT in any document in
+       resources/ (no operating-weight row exists in any of the three extracts).
+       It is a sanity reference ONLY — nothing is normalised to it. Confirm it
+       against the real ECR88(D) spec sheet, or delete it. -->
+  <xacro:property name="mass_total_reference"  value="8500.0"/>  <!-- ESTIMATE (T10) recalled brochure figure, unsourced -->
+
+  <!-- ..................................................................
+       [14][C] AUTHORITATIVE MASS SET — m_*, one entry per link that
+       ecr88.urdf.xacro actually emits. This is the set the URDF consumes
+       (its "REQUIRED PROPERTY CONTRACT" block, section [C]).
+       EVERY value is ESTIMATE (T4). Kilograms.
+       .................................................................. -->
+  <xacro:property name="m_base"                value="2200.0"/>  <!-- ESTIMATE (T4) track frame / centre car body, tracks excluded -->
+  <xacro:property name="m_track"               value="900.0"/>   <!-- ESTIMATE (T4) PER TRACK — emitted twice (left + right) -->
+  <xacro:property name="m_house"               value="3200.0"/>  <!-- ESTIMATE (T4) upper structure + counterweight + engine + cab -->
+  <xacro:property name="m_boom"                value="620.0"/>   <!-- ESTIMATE (T4) 3.55 m boom (lenBm1) -->
+  <xacro:property name="m_arm"                 value="300.0"/>   <!-- ESTIMATE (T4) 1.7 m arm; scale ~x1.2 for the 2.1 m variant -->
+  <xacro:property name="m_gnd_link"            value="5.0"/>     <!-- ESTIMATE (T4) 4-bar ground link (arm-side member, 0.2597 m) -->
+  <xacro:property name="m_inp_link"            value="25.0"/>    <!-- ESTIMATE (T4) 4-bar input/crank link -->
+  <xacro:property name="m_conn_rod"            value="15.0"/>    <!-- ESTIMATE (T4) 4-bar connecting rod (idler, cut member) -->
+  <xacro:property name="m_outp_link"           value="40.0"/>    <!-- ESTIMATE (T4) 4-bar output link — the load path to the tool -->
+  <xacro:property name="m_tilt_mount"          value="60.0"/>    <!-- ESTIMATE (T4) -->
+  <xacro:property name="m_tilt"                value="120.0"/>   <!-- ESTIMATE (T4) JK tilt body -->
+  <xacro:property name="m_rotator"             value="180.0"/>   <!-- ESTIMATE (T4) JK rotator body -->
+  <xacro:property name="m_attachment"          value="90.0"/>    <!-- ESTIMATE (T4) suction adapter -->
+  <xacro:property name="m_probe"               value="20.0"/>    <!-- ESTIMATE (T4) probe stand-off member -->
+  <xacro:property name="m_contact_surface"     value="180.0"/>   <!-- ESTIMATE (T4) suction plate assembly (the TCP link) -->
+  <!-- Marker/frame links (boom_mount, gnss_main, gnss_aux, the three cyl_*
+       anchors). Not massless — see the note above. -->
+  <xacro:property name="m_marker"              value="0.01"/>    <!-- ESTIMATE (T4) coordinate-frame markers, 6 of them -->
+
+  <!-- ..................................................................
+       Total of the split, COMPUTED — never hand-typed, so it cannot go stale
+       the way the old "pinned to 8.5 t" comment did. Tracks counted twice,
+       markers six times (the six frame links listed above).
+       .................................................................. -->
+  <xacro:property name="mass_total_estimated"
+                  value="${m_base + 2*m_track + m_house + m_boom + m_arm
+                          + m_gnd_link + m_inp_link + m_conn_rod + m_outp_link
+                          + m_tilt_mount + m_tilt + m_rotator + m_attachment
+                          + m_probe + m_contact_surface + 6*m_marker}"/>
+  <!-- How far the guessed split lands from the recalled 8.5 t (T10). Positive
+       = the split is heavier. This is NOT an error term to be driven to zero:
+       both sides are guesses. It is here so a reader sees the size of the
+       uncertainty instead of a false claim of agreement. -->
+  <xacro:property name="mass_total_split_delta"
+                  value="${mass_total_estimated - mass_total_reference}"/>
+
+  <!-- ..................................................................
+       LEGACY mass_* NAMES — DERIVED from m_* above, not independent numbers.
+       They exist because ecr88_inertia.xacro and the earlier draft of this
+       file used this vocabulary. Nothing in ecr88.urdf.xacro reads them.
+       Do NOT put a literal back into any of the aliased rows: that is how the
+       two disagreeing mass sets came about in the first place.
+       .................................................................. -->
+  <xacro:property name="mass_undercarriage"    value="${m_base + 2*m_track}"/>  <!-- alias: base + both tracks -->
+  <xacro:property name="mass_house"            value="${m_house}"/>      <!-- alias -->
+  <xacro:property name="mass_bm1"              value="${m_boom}"/>       <!-- alias -->
+  <xacro:property name="mass_bm2"              value="0.0"/>     <!-- lenBm2 = 0, segment absent. Not an estimate. -->
+  <xacro:property name="mass_arm"              value="${m_arm}"/>        <!-- alias -->
+  <xacro:property name="mass_inp_link"         value="${m_inp_link}"/>   <!-- alias -->
+  <xacro:property name="mass_conn_rod"         value="${m_conn_rod}"/>   <!-- alias -->
+  <xacro:property name="mass_outp_link"        value="${m_outp_link}"/>  <!-- alias -->
+  <xacro:property name="mass_tilt_mnt"         value="${m_tilt_mount}"/> <!-- alias -->
+  <xacro:property name="mass_tilt"            value="${m_tilt}"/>        <!-- alias -->
+  <xacro:property name="mass_rot"              value="${m_rotator}"/>    <!-- alias -->
+  <xacro:property name="mass_att"              value="${m_attachment}"/> <!-- alias -->
+  <xacro:property name="mass_frame_only"       value="${m_marker}"/>     <!-- alias -->
+  <!-- No m_* counterpart: the current URDF emits boom_mount_link as a marker
+       frame and emits no fork link at all (the fork is the PanelLift variant,
+       section [10]). These two stay independent ESTIMATEs and are NOT part of
+       mass_total_estimated, because no link carries them today. -->
+  <xacro:property name="mass_boom_mount"       value="80.0"/>    <!-- ESTIMATE (T4) boom-swing bracket, not emitted as a massive link -->
+  <xacro:property name="mass_fork"             value="180.0"/>   <!-- ESTIMATE (T4) PanelLift fork, not emitted by this URDF -->
+
+  <!-- Payload carried by the suction plate. Not a machine property — a
+       scenario property — but it dominates the front-end dynamics, so it is
+       parameterised here rather than buried in a scene file. Default 0. -->
+  <xacro:property name="mass_panel_payload"    value="0.0"/>     <!-- set per scenario -->
+
+  <!-- Inertia derivation control, consumed by ecr88_inertia.xacro.
+       'box'      : solid cuboid from the link's primitive extents (default)
+       'cylinder' : solid cylinder about its long axis (booms/arm)
+       'from_mesh': requires use_meshes = true AND real densities. Not usable
+                    yet — no meshes, no densities. -->
+  <xacro:property name="inertia_model"         value="box"/>
+  <!-- Structural steel weldments are hollow. A solid-box tensor overestimates
+       off-axis inertia badly, so the derived tensor is scaled by this factor.
+       0.6 is a rule of thumb for fabricated box-section booms. ESTIMATE (T5). -->
+  <xacro:property name="inertia_hollow_factor" value="0.6"/>
+  <!-- Floor on the diagonal so Isaac never sees a singular tensor on the
+       zero-mass frame links. -->
+  <xacro:property name="inertia_min_diag"      value="1e-6"/>
+
+  <!-- ========================================================================
+       [15] URDF PROPERTY CONTRACT
+       ========================================================================
+       ecr88.urdf.xacro declares a "REQUIRED PROPERTY CONTRACT" at its head and
+       reads NOTHING else from this file. Until this section existed the two
+       files were written against different vocabularies and had never been
+       expanded together.
+
+       Everything below is one of exactly two things, and the comment on each
+       row says which:
+         ALIAS     — a second name for a property defined above. No new number
+                     enters the file. If you need to change the value, change
+                     it at the definition, never here.
+         ESTIMATE  — a value that exists in NO source we hold, authored here
+                     because the URDF cannot expand without it. Every one
+                     carries its TODO tag and its assumption.
+
+       Placed LAST on purpose: the variant blocks in section [12] define
+       lenArm / distArmToInpLinkX / distAttToProbe* / distProbeToContactSurface*
+       inside <xacro:if>, so an alias to them is only safe after [12] has run.
+       Do not move this section up the file.
+       ======================================================================== -->
+
+  <!-- ..................................................................
+       [15][A] Frame offsets, per axis.  ALL ALIASES — section [4]/[7]/[12].
+       The URDF wants dist<Name>_x/_y/_z; the sheet spells them dist<Name>X/Y/Z.
+       .................................................................. -->
+  <xacro:property name="distChsToBmMnt_x"      value="${distChsToBmMntX}"/>              <!-- ALIAS -->
+  <xacro:property name="distChsToBmMnt_y"      value="${distChsToBmMntY}"/>              <!-- ALIAS -->
+  <xacro:property name="distChsToBmMnt_z"      value="${distChsToBmMntZ}"/>              <!-- ALIAS -->
+
+  <xacro:property name="distBmMntToBm1_x"      value="${distBmMntToBm1X}"/>              <!-- ALIAS -->
+  <xacro:property name="distBmMntToBm1_y"      value="${distBmMntToBm1Y}"/>              <!-- ALIAS -->
+  <xacro:property name="distBmMntToBm1_z"      value="${distBmMntToBm1Z}"/>              <!-- ALIAS -->
+
+  <xacro:property name="distArmToInpLink_x"    value="${distArmToInpLinkX}"/>            <!-- ALIAS (variant-dependent, [12]) -->
+  <xacro:property name="distArmToInpLink_y"    value="${distArmToInpLinkY}"/>            <!-- ALIAS -->
+  <xacro:property name="distArmToInpLink_z"    value="${distArmToInpLinkZ}"/>            <!-- ALIAS -->
+
+  <xacro:property name="distOutpLinkToTiltMnt_x" value="${distOutpLinkToTiltMntX}"/>     <!-- ALIAS -->
+  <xacro:property name="distOutpLinkToTiltMnt_y" value="${distOutpLinkToTiltMntY}"/>     <!-- ALIAS -->
+  <xacro:property name="distOutpLinkToTiltMnt_z" value="${distOutpLinkToTiltMntZ}"/>     <!-- ALIAS -->
+
+  <xacro:property name="distTiltMntToTilt_x"   value="${distTiltMntToTiltX}"/>           <!-- ALIAS -->
+  <xacro:property name="distTiltMntToTilt_y"   value="${distTiltMntToTiltY}"/>           <!-- ALIAS -->
+  <xacro:property name="distTiltMntToTilt_z"   value="${distTiltMntToTiltZ}"/>           <!-- ALIAS -->
+
+  <xacro:property name="distRotToAtt_x"        value="${distRotToAttX}"/>                <!-- ALIAS -->
+  <xacro:property name="distRotToAtt_y"        value="${distRotToAttY}"/>                <!-- ALIAS -->
+  <xacro:property name="distRotToAtt_z"        value="${distRotToAttZ}"/>                <!-- ALIAS -->
+
+  <xacro:property name="distAttToProbe_x"      value="${distAttToProbeX}"/>              <!-- ALIAS (variant-dependent, [12]) -->
+  <xacro:property name="distAttToProbe_y"      value="${distAttToProbeY}"/>              <!-- ALIAS -->
+  <xacro:property name="distAttToProbe_z"      value="${distAttToProbeZ}"/>              <!-- ALIAS (variant-dependent, [12]) -->
+
+  <xacro:property name="distProbeToContactSurface_x" value="${distProbeToContactSurfaceX}"/> <!-- ALIAS (variant-dependent, [12]) -->
+  <xacro:property name="distProbeToContactSurface_y" value="${distProbeToContactSurfaceY}"/> <!-- ALIAS -->
+  <xacro:property name="distProbeToContactSurface_z" value="${distProbeToContactSurfaceZ}"/> <!-- ALIAS (variant-dependent, [12]) -->
+
+  <xacro:property name="distAntMainToChs_x"    value="${distAntMainToChsX}"/>            <!-- ALIAS -->
+  <xacro:property name="distAntMainToChs_y"    value="${distAntMainToChsY}"/>            <!-- ALIAS -->
+  <xacro:property name="distAntMainToChs_z"    value="${distAntMainToChsZ}"/>            <!-- ALIAS -->
+
+  <xacro:property name="distAntMainToAntAux_x" value="${distAntMainToAntAuxX}"/>         <!-- ALIAS -->
+  <xacro:property name="distAntMainToAntAux_y" value="${distAntMainToAntAuxY}"/>         <!-- ALIAS -->
+  <xacro:property name="distAntMainToAntAux_z" value="${distAntMainToAntAuxZ}"/>         <!-- ALIAS -->
+
+  <xacro:property name="distCylLrgBm1_x"       value="${distCylLrgBm1X}"/>               <!-- ALIAS -->
+  <xacro:property name="distCylLrgBm1_y"       value="${distCylLrgBm1Y}"/>               <!-- ALIAS -->
+  <xacro:property name="distCylLrgBm1_z"       value="${distCylLrgBm1Z}"/>               <!-- ALIAS -->
+
+  <xacro:property name="distCylSmlBm1_x"       value="${distCylSmlBm1X}"/>               <!-- ALIAS -->
+  <xacro:property name="distCylSmlBm1_y"       value="${distCylSmlBm1Y}"/>               <!-- ALIAS -->
+  <xacro:property name="distCylSmlBm1_z"       value="${distCylSmlBm1Z}"/>               <!-- ALIAS -->
+
+  <xacro:property name="distCylLrgArm_x"       value="${distCylLrgArmX}"/>               <!-- ALIAS -->
+  <xacro:property name="distCylLrgArm_y"       value="${distCylLrgArmY}"/>               <!-- ALIAS -->
+  <xacro:property name="distCylLrgArm_z"       value="${distCylLrgArmZ}"/>               <!-- ALIAS -->
+
+  <!-- ..................................................................
+       [15][B] Boundary boxes.  ALL ALIASES — section [9].
+       The source spells the SIZES LenUpX / LenUpY but the ORIGINS LenUppX1 /
+       LenUppY1 / LenUppZ1 (its own inconsistency, preserved above). The URDF
+       normalises everything to lenUpp*, hence the two odd-looking rows.
+       .................................................................. -->
+  <xacro:property name="lenBottomX1"           value="${LenBottomX1}"/>                  <!-- ALIAS -->
+  <xacro:property name="lenBottomY1"           value="${LenBottomY1}"/>                  <!-- ALIAS -->
+  <xacro:property name="lenBottomZ1"           value="${LenBottomZ1}"/>                  <!-- ALIAS -->
+  <xacro:property name="lenBottomX"            value="${LenBottomX}"/>                   <!-- ALIAS -->
+  <xacro:property name="lenBottomY"            value="${LenBottomY}"/>                   <!-- ALIAS -->
+  <xacro:property name="lenUppX1"              value="${LenUppX1}"/>                     <!-- ALIAS -->
+  <xacro:property name="lenUppY1"              value="${LenUppY1}"/>                     <!-- ALIAS -->
+  <xacro:property name="lenUppZ1"              value="${LenUppZ1}"/>                     <!-- ALIAS -->
+  <xacro:property name="lenUppX"               value="${LenUpX}"/>                       <!-- ALIAS of LenUpX (source spelling) -->
+  <xacro:property name="lenUppY"               value="${LenUpY}"/>                       <!-- ALIAS of LenUpY (source spelling) -->
+
+  <!-- ..................................................................
+       [15][C] Masses — defined in section [14] (m_* block). Nothing here.
+       .................................................................. -->
+
+  <!-- ..................................................................
+       [15][D] Primitive placeholder geometry.  ESTIMATE (T11) unless marked
+       ALIAS. These are cross-section dimensions for the boxes/cylinders drawn
+       while use_meshes = false. No source we hold contains any of them, and
+       they also drive the inertia tensors (T5), so a wrong radius is a wrong
+       tensor, not just a wrong picture.
+       .................................................................. -->
+  <!-- Track shoe width. ASSUMPTION: 0.45 m, chosen so the two track boxes plus
+       the centre car body exactly fill the measured undercarriage width
+       lenBottomY = 2.32 (leaving a 1.42 m centre frame, which is plausible for
+       this class). The 0.45 itself is not sourced. -->
+  <xacro:property name="geo_track_w"           value="0.45"/>    <!-- ESTIMATE (T11) m -->
+  <!-- House height. NOT a fresh guess: reuses the T6 derivation in section [9]
+       (cab roof one bolt-height below the antenna plane), so the house box and
+       the boundary-box height can never disagree. -->
+  <xacro:property name="geo_house_h"           value="${LenUpZ_est}"/>                   <!-- ALIAS of the T6 derivation -->
+  <!-- Structural member radii. ASSUMPTION: fabricated box-section members
+       approximated by a circumscribed-ish cylinder — boom heavier than arm,
+       both far heavier than the 4-bar links. Nothing sourced. -->
+  <xacro:property name="geo_boom_r"            value="0.20"/>    <!-- ESTIMATE (T11) m, 3.55 m boom -->
+  <xacro:property name="geo_arm_r"             value="0.15"/>    <!-- ESTIMATE (T11) m, 1.7 m arm -->
+  <xacro:property name="geo_linkage_r"         value="0.05"/>    <!-- ESTIMATE (T11) m, 4-bar links + probe member -->
+  <xacro:property name="geo_tr_r"              value="0.18"/>    <!-- ESTIMATE (T11) m, JK tiltrotator body -->
+  <!-- Suction pad footprint. NOT a fresh guess: reuses the T9 stand-in from
+       section [11] (pad sized to the panel it lifts) because the source
+       records LenSDX = LenSDY = 0 for ECR88. -->
+  <xacro:property name="geo_pad_x"             value="${LenSDX_est}"/>                   <!-- ALIAS of the T9 stand-in -->
+  <xacro:property name="geo_pad_y"             value="${LenSDY_est}"/>                   <!-- ALIAS of the T9 stand-in -->
+  <!-- Pad plate thickness. No source at any level — LenSDZ (-0.84) is the whole
+       adapter stack height, not the plate. ASSUMPTION: 60 mm plate. -->
+  <xacro:property name="geo_pad_t"             value="0.06"/>    <!-- ESTIMATE (T11) m -->
+  <!-- Cosmetic only: radius of the marker spheres drawn at the pure coordinate
+       frames (gnss, cyl anchors, boom mount). Not machine data. -->
+  <xacro:property name="geo_marker_r"          value="0.03"/>    <!-- ESTIMATE (T11) m, cosmetic -->
+
+  <!-- ..................................................................
+       [15][E] Joint limits / actuation.  ALL ALIASES onto section [13].
+       No number is authored here — section [13] holds every value together
+       with its T1/T2/T3 assumption, including the jntBkt* and jntConnRod*
+       blocks that had no counterpart in the sheet at all.
+       Joint-name map (URDF joint  <-  sheet-vocabulary block):
+         swing_joint     <- jntSwing       boom_joint      <- jntBm1
+         arm_joint       <- jntArm         bucket_joint    <- jntBkt
+         input_link_joint<- jntInpLink     conn_rod_joint  <- jntConnRod
+         tilt_joint      <- jntTilt        rotator_joint   <- jntRot
+       rotator_joint is `continuous` in the URDF, so it takes effort/velocity
+       only — jntRotLower/Upper stay unaliased on purpose (they are the
+       revolute-fallback pair described in section [13]).
+       .................................................................. -->
+  <xacro:property name="lim_swing_lower"       value="${jntSwingLower}"/>                <!-- ALIAS -->
+  <xacro:property name="lim_swing_upper"       value="${jntSwingUpper}"/>                <!-- ALIAS -->
+  <xacro:property name="eff_swing"             value="${jntSwingEffort}"/>               <!-- ALIAS -->
+  <xacro:property name="vel_swing"             value="${jntSwingVelocity}"/>             <!-- ALIAS -->
+
+  <xacro:property name="lim_boom_lower"        value="${jntBm1Lower}"/>                  <!-- ALIAS -->
+  <xacro:property name="lim_boom_upper"        value="${jntBm1Upper}"/>                  <!-- ALIAS -->
+  <xacro:property name="eff_boom"              value="${jntBm1Effort}"/>                 <!-- ALIAS -->
+  <xacro:property name="vel_boom"              value="${jntBm1Velocity}"/>               <!-- ALIAS -->
+
+  <xacro:property name="lim_arm_lower"         value="${jntArmLower}"/>                  <!-- ALIAS -->
+  <xacro:property name="lim_arm_upper"         value="${jntArmUpper}"/>                  <!-- ALIAS -->
+  <xacro:property name="eff_arm"               value="${jntArmEffort}"/>                 <!-- ALIAS -->
+  <xacro:property name="vel_arm"               value="${jntArmVelocity}"/>               <!-- ALIAS -->
+
+  <xacro:property name="lim_bucket_lower"      value="${jntBktLower}"/>                  <!-- ALIAS -->
+  <xacro:property name="lim_bucket_upper"      value="${jntBktUpper}"/>                  <!-- ALIAS -->
+  <xacro:property name="eff_bucket"            value="${jntBktEffort}"/>                 <!-- ALIAS -->
+  <xacro:property name="vel_bucket"            value="${jntBktVelocity}"/>               <!-- ALIAS -->
+
+  <xacro:property name="lim_inp_link_lower"    value="${jntInpLinkLower}"/>              <!-- ALIAS -->
+  <xacro:property name="lim_inp_link_upper"    value="${jntInpLinkUpper}"/>              <!-- ALIAS -->
+  <xacro:property name="eff_inp_link"          value="${jntInpLinkEffort}"/>             <!-- ALIAS -->
+  <xacro:property name="vel_inp_link"          value="${jntInpLinkVelocity}"/>           <!-- ALIAS -->
+
+  <xacro:property name="lim_conn_rod_lower"    value="${jntConnRodLower}"/>              <!-- ALIAS -->
+  <xacro:property name="lim_conn_rod_upper"    value="${jntConnRodUpper}"/>              <!-- ALIAS -->
+  <xacro:property name="eff_conn_rod"          value="${jntConnRodEffort}"/>             <!-- ALIAS -->
+  <xacro:property name="vel_conn_rod"          value="${jntConnRodVelocity}"/>           <!-- ALIAS -->
+
+  <xacro:property name="lim_tilt_lower"        value="${jntTiltLower}"/>                 <!-- ALIAS -->
+  <xacro:property name="lim_tilt_upper"        value="${jntTiltUpper}"/>                 <!-- ALIAS -->
+  <xacro:property name="eff_tilt"              value="${jntTiltEffort}"/>                <!-- ALIAS -->
+  <xacro:property name="vel_tilt"              value="${jntTiltVelocity}"/>              <!-- ALIAS -->
+
+  <xacro:property name="eff_rotator"           value="${jntRotEffort}"/>                 <!-- ALIAS (continuous: no lim_*) -->
+  <xacro:property name="vel_rotator"           value="${jntRotVelocity}"/>               <!-- ALIAS (continuous: no lim_*) -->
+
+  <xacro:property name="dyn_damping"           value="${jnt_damping_default}"/>          <!-- ALIAS -->
+  <xacro:property name="dyn_friction"          value="${jnt_friction_default}"/>         <!-- ALIAS -->
+
+  <!-- ..................................................................
+       [15][F] Bucket 4-bar mimic coefficients.  ALIASES onto section [13].
+       .................................................................. -->
+  <xacro:property name="bkt_mimic_mult"        value="${jntBktMimicMultiplier}"/>        <!-- ALIAS -->
+  <xacro:property name="bkt_mimic_off"         value="${jntBktMimicOffset}"/>            <!-- ALIAS -->
+
+</robot>

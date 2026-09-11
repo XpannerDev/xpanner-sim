@@ -1,0 +1,834 @@
+<?xml version="1.0"?>
+<!-- =====================================================================================
+     ecr88.urdf.xacro  -  Volvo ECR88 short-swing excavator + Xpanner X1 PanelLift front end
+     =====================================================================================
+     Target      : Isaac Sim 4.x / 5.x  (isaacsim.asset.importer.urdf), ROS 2 style xacro
+     Units       : metres, radians, kilograms  (URDF/SI)
+     Kinematics  : resources/ECR88_kinematic_parameters.md
+                   sheet `KinematicPara_new`, column "ECR88 기장"  <<< THE release parameter set
+                   sheet `old` [hidden] is raw Leica MC1 totalstation data, REFERENCE ONLY
+                   (old vs new differ in the 3rd decimal: LenBm 3.551 vs lenBm1 3.55,
+                    LenAm 1.699 vs lenArm 1.7, LenBktInp 0.423 vs lenInpLink 0.42 ...).
+
+     This file contains NO literal kinematic numbers. Every geometric quantity comes from
+     ecr88_params.xacro. The only bare numerals below are:
+       * 0 and 1            - axis vectors, zero origins, identity scale
+       * formula constants  - 12 / 2 / 0.5 inside the textbook inertia + centring macros,
+                              and RGBA colour values. These are arithmetic/cosmetic,
+                              NOT machine data. They are confined to the two clearly
+                              marked sections "ARITHMETIC CONSTANTS" and "MATERIALS".
+
+     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     TODO / NOT-IN-ANY-SOURCE  (read this before trusting the asset for anything dynamic)
+     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     T1  MASS / CoG / INERTIA - NOT IN ANY SOURCE WE HOLD. The parameter sheet is purely
+         geometric; the Length-Kinematic deck is purely geometric; Sensor_and_Valve
+         calibration lists `CalibInertialTensor ... (TBD)`. Every m_* property is an
+         ESTIMATE. Inertia tensors are computed from the placeholder primitives by the
+         macros below (uniform-density box / cylinder), so they are consistent with the
+         placeholder geometry and wrong for the real machine. DO NOT tune a controller,
+         publish a payload estimate, or report a tipping margin off this asset until the
+         ECR88 CAD (Olivia) has given real mass properties.
+     T2  JOINT LIMITS - NOT IN ANY SOURCE WE HOLD. The sheet has no min/max joint angles
+         and no cylinder strokes, so the cylinder-length -> joint-angle map cannot be
+         closed. Every lim_*/eff_*/vel_* property is an ESTIMATE. Recover them from the
+         CalibrationVideo/ set on SharePoint (Chassis/Boom/Arm/Bucket/Travel/Tilt/Rotator,
+         7 clips, 3.03 GB) or from cylinder stroke data.
+     T3  JOINT AXIS DIRECTIONS AND SIGNS - the deck's X(+)/Y(+)/Z(+) arrows are picture
+         labels only; no axis definition is recoverable from the extracted text. Axes here
+         follow REP-103 (X forward, Y left, Z up) and are an ASSUMPTION:
+           swing = +Z, boom/arm/bucket = +Y (so POSITIVE rotation LOWERS the tip - note
+           this is opposite to the usual operator "boom up positive" convention),
+           tilt = +X (tiltrotator rolls the tool sideways), rotator = +Z (tool axis).
+         The rotator axis is the one axis the data corroborates: distRotToAtt is purely
+         -Z (0, 0, -0.2615), i.e. the attachment hangs down the rotator's own Z.
+     T4  MESHES DO NOT EXIST YET (held by Olivia). All visual/collision geometry is
+         primitive. Flip  use_meshes:=true  once meshes land in
+         assets/ecr88/meshes/ ; the primitive path and the mesh path are independent
+         <origin> branches inside the viscol macro, so no other edit is needed.
+     T5  CLOSED LOOP - the bucket 4-bar cannot be expressed in URDF. See the
+         "MIMIC / closed-loop" block at the bucket linkage for the exact cut, the exact
+         constraint to re-impose in USD, and why the mimic multiplier is a placeholder.
+     T6  BOUNDARY-BOX ORIGIN IS UNRESOLVED. lenBottom*/lenUpp* SIZES are used as given
+         (2.82 x 2.32 undercarriage, 2.28 x 2.46 upper), straight out of sheet `old`.
+         The CORNER ORIGINS (lenBottomX1 -0.44, lenUppX1 -0.41) do not resolve to a
+         machine-centred origin in the Chs frame. THE ARGUMENT, ENTIRELY FROM THE SHEET'S
+         OWN NUMBERS: read as min-corner + size in the Chs frame, the undercarriage spans
+         X = -0.44 .. +2.38 (centre +0.97) and the house spans X = -0.41 .. +1.87
+         (centre +0.73). Both are heavily forward-biased about the frame origin, while
+         the sheet independently places the Chs frame ON the swing axis (distChsToBmMnt_z
+         = 0, and no Uc->Chs offset row exists anywhere in KinematicPara_new). A box
+         whose centre is ~1 m in front of the axis the machine rotates about is not a
+         box measured from that axis, so the origins are almost certainly expressed in
+         the Leica instrument frame. No external specification is needed for that, and
+         none is asserted - see T17 for the recalled tail-swing figure that used to
+         carry this paragraph and no longer does.
+         Therefore the boxes here are CENTRED ON THE SWING AXIS in X and Y and use only
+         the sizes. The Z levels ARE used as given and are self-consistent: ground plane
+         at lenBottomZ1 (-1.445) and house floor at lenUppZ1 (-0.67) below the boom-pin
+         plane. The raw-corner placement is left one edit away as a commented
+         alternative.
+     T7  BASE FRAME HEIGHT - base_link sits at the Chs reference (boom-pin plane), so the
+         GROUND PLANE IS AT z = lenBottomZ1 = -1.445, NOT at z = 0. Spawn the articulation
+         at +1.445 in Isaac, or add a world->base_link offset joint in the scene USD.
+     T8  distCylLrgArm (-1.508, 0, 1.08) is emitted relative to the BOOM TIP / arm pin
+         (lenBm1 + lenBm2 + x), not the boom foot - the negative X only makes sense that
+         way, and |v| then equals lenToCylLrgArm 1.855 exactly. ASSUMPTION, confirm on CAD.
+     T9  distCylLrgBm1 is emitted on boom_mount_link (BmMnt), distCylSmlBm1 on boom_link.
+         ASSUMPTION from the naming + the magnitude cross-check (see comments at the
+         frames). The arm small-end pin (lenToCylSmlArm 0.53) and the bucket cylinder pins
+         (lenToCylLrgBkt*, lenToCylSmlBkt) are NOT emitted: their perpendicular offsets
+         are not in the sheet, only scalar distances.
+     T10 SOURCE CONTRADICTION, UNRESOLVED: the Length-Kinematic deck asserts
+         "lenToCylSmlBkt value is same with lenGndLink", but the sheet gives
+         lenToCylSmlBkt 0.42 and lenGndLink 0.2597. Do not trust bucket-cylinder geometry
+         until this is settled. Nothing in this file depends on lenToCylSmlBkt.
+     T11 `Delete`-marked rows (distUcToFork, distForkToPanelBottom, distUcToForkUpRef,
+         distUcToForkUpPnt1, distUcToForkDownPnt2, distUcToForkDownPnt3,
+         angAttToContactSurface) are NOT used here, per the source's processing column.
+         `Update after Calibration` rows (distUcToForkBack, distForkBackToPanelTop,
+         angForkUpLimit) belong to the fork/panel option, not to this chain; they must
+         still exist as xacro properties in ecr88_params.xacro so the fork variant can
+         consume them without hardcoding.
+     T12 TRACKS ARE FIXED JOINTS for now (see track section) - make them `continuous`
+         with a drive axis when travel simulation is needed.
+     T13 VARIANT: the sheet also holds "ECR88 2.1m 미국#1" (lenArm 2.1,
+         distArmToInpLink_x 1.841) and a new-suction variant (distAttToProbe
+         0.255/0/-0.57). This file is built for the 기장 column; variants should be a
+         params-file switch, not a fork of this file.
+     T14 lenBm2 = 0 (dual-boom option absent). No second boom link is emitted; the arm
+         joint is placed at (lenBm1 + lenBm2) so enabling the option is a params change.
+         Likewise distBmMntToBm1 = 0 (BoomSwing sensor option off) is carried through as
+         the boom joint origin rather than being dropped.
+     T14b ISAAC IMPORT SETTING, NOT OPTIONAL: turn "Merge Fixed Joints" OFF in
+         isaacsim.asset.importer.urdf. With it on, every fixed-joint child is collapsed
+         into its parent and the frames this asset exists to publish - gnss_main_link,
+         gnss_aux_link, the three cyl_* anchors, boom_mount_link, probe_link and
+         contact_surface_link (the TCP) - are silently deleted from the USD.
+     T14c angArmToGndLink is intentionally NOT consumed: the ground-link direction is
+         DERIVED from distArmToInpLink and lenArm via atan2, which is exact and can
+         never drift from the pin positions, whereas the sheet's 4.1 deg is a rounded
+         restatement of the same thing (derived value is 4.09 deg). Same reasoning for
+         lenBottomX1/Y1 and lenUppX1/Y1, which are excluded under T6. All five still
+         belong in the params file - other consumers (the cylinder solver, the HMI
+         tablet display) need them.
+     T15 NO PREFIX ARG. Single-machine asset. Add a `prefix` arg if multi-machine scenes
+         are needed; nothing here blocks it.
+     T16 The real ECR88 house swings CONTINUOUSLY (360 deg, endless). swing_joint is
+         modelled `revolute` as specified, with ESTIMATE limits; change the type to
+         `continuous` and drop the lower/upper if endless slew is wanted.
+     T17 RECALLED, UNSOURCED EXTERNAL FIGURES - confirm with Olivia before either is
+         quoted anywhere. Neither is in resources/ECR88_kinematic_parameters.md,
+         resources/Length_Kinematic_Measurement_ProductionV1.md or
+         resources/Sensor_and_Valve_Calibration_ProductionV1.md:
+           (a) "ECR88 tail swing radius ~1.28 m". This was the load-bearing argument in
+               T6 for discarding the sheet's corner origins, stated as fact. It has been
+               removed from that argument (T6 now rests only on the sheet's own numbers)
+               and is recorded here as an ASSUMPTION to be confirmed or dropped.
+           (b) "ECR88(D) operating weight ~8.5 t", carried in ecr88_params.xacro as
+               mass_total_reference (params T10). It is a sanity reference only; the
+               per-link mass split is NOT normalised to it and nothing in this file
+               reads it. Until (b) is confirmed, this asset asserts NO machine weight.
+         Both were, at different times, written into this file and the params file as
+         two DIFFERENT numbers for the same physical quantity (~8.86 t here vs ~8.5 t
+         there). That is the failure this TODO exists to prevent recurring: one number,
+         one file, labelled.
+     T18 BUILD GATE - this asset does not ship unless it expands. Run
+           xacro assets/ecr88/urdf/ecr88.urdf.xacro -o /dev/null
+         and, better, the project validator
+           python3 scripts/validate_urdf.py <dash><dash>xacro assets/ecr88/urdf/ecr88.urdf.xacro
+         (<dash><dash> is spelled out because a literal double hyphen is illegal inside
+         an XML comment - type it as two ASCII hyphens. Set $XACRO if xacro is not on
+         PATH.) Both belong in CI as gates: a missing or misspelled property in
+         ecr88_params.xacro is invisible until expansion is attempted, and xacro reports
+         only the FIRST undefined name, so a silently broken contract is otherwise
+         indistinguishable from a healthy file.
+
+     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     REQUIRED PROPERTY CONTRACT  -  ecr88_params.xacro MUST define every name below
+     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     NAMES ONLY. Not one value below lives in this file. ecr88_params.xacro keeps the
+     SPREADSHEET spelling (distChsToBmMntX, LenUpX, ...) in its sections [4]-[14] so it
+     diffs 1:1 against the sheet, and defines every contract name below in its section
+     [15] - each one either an ALIAS onto the sheet-named property (no new number) or a
+     labelled ESTIMATE. A contract name must never carry a number of its own: that is
+     how the two files came to hold two different masses for the same machine. If a name
+     here is missing or misspelled there, the file does not expand at all (T18).
+     [A] Kinematics, verbatim from KinematicPara_new / ECR88 기장, one property per axis
+         (params [15][A], aliased onto the sheet's dist*X/Y/Z):
+         distAntMainToAntAux_x|_y|_z        distAntMainToChs_x|_y|_z
+         distChsToBmMnt_x|_y|_z             distBmMntToBm1_x|_y|_z
+         distArmToInpLink_x|_y|_z           distOutpLinkToTiltMnt_x|_y|_z
+         distTiltMntToTilt_x|_y|_z          distRotToAtt_x|_y|_z
+         distAttToProbe_x|_y|_z             distProbeToContactSurface_x|_y|_z
+         distCylLrgBm1_x|_y|_z              distCylSmlBm1_x|_y|_z
+         distCylLrgArm_x|_y|_z
+         lenBm1  lenBm2  lenArm  lenInpLink  lenConnRod  lenOutpLink  lenGndLink
+         angArmToGndLink  angOutpLinkToTiltMnt  angTiltMntToTilt  angRotToAtt
+         angAttToProbe    angProbeToContactSurface
+     [B] Boundary boxes (sheet `old`, ECR88 column; the source spells the sizes
+         LenUpX/LenUpY but the origins LenUppX1/Y1/Z1 - normalised to lenUpp* here, and
+         aliased back onto the source spelling in params [15][B], lenUppX -> LenUpX):
+         lenBottomX1 lenBottomY1 lenBottomZ1 lenBottomX lenBottomY
+         lenUppX1    lenUppY1    lenUppZ1    lenUppX    lenUppY
+     [C] ESTIMATE masses [kg] (T1), defined in params [15][C] and NOWHERE ELSE. The
+         numbers deliberately do not appear here: a second copy of the mass list in this
+         header is exactly how this asset came to state two different operating weights
+         (~8.86 t here, ~8.5 t in the params file) for the same machine. NO operating
+         weight is asserted by this file; see T17(b) for the status of the one figure
+         the params file still carries as a sanity reference.
+         m_base  m_track (per track, emitted twice)  m_house  m_boom  m_arm
+         m_gnd_link  m_inp_link  m_conn_rod  m_outp_link
+         m_tilt_mount  m_tilt  m_rotator  m_attachment
+         m_probe  m_contact_surface  m_marker
+     [D] ESTIMATE primitive geometry [m] (T4), params [15][D]:
+         geo_track_w  geo_house_h  geo_boom_r  geo_arm_r  geo_linkage_r  geo_tr_r
+         geo_pad_x  geo_pad_y  geo_pad_t  geo_marker_r
+     [E] ESTIMATE joint limits / actuation (T2), params [15][E], one set per actuated
+         joint (swing boom arm bucket inp_link conn_rod tilt rotator):
+         lim_<j>_lower  lim_<j>_upper   [rad]   (not for rotator - continuous)
+         eff_<j>                         [N.m]
+         vel_<j>                         [rad/s]
+         dyn_damping  dyn_friction
+     [F] ESTIMATE bucket 4-bar mimic coefficients (T5), params [15][F]:
+         bkt_mimic_mult  bkt_mimic_off
+     Requires xacro's math namespace: pi, sin, cos, atan2, sqrt.
+     ===================================================================================== -->
+<robot name="ecr88" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ============================ ARGS ============================ -->
+  <xacro:arg name="use_meshes"          default="false"/>
+  <xacro:arg name="use_ros2_control"    default="false"/>
+  <xacro:arg name="model_bucket_fourbar" default="true"/>
+  <xacro:arg name="mesh_package"        default="xpanner_sim"/>
+  <xacro:arg name="mesh_dir"            default="assets/ecr88/meshes"/>
+  <xacro:arg name="mesh_visual_ext"     default="dae"/>
+  <xacro:arg name="mesh_collision_ext"  default="stl"/>
+  <xacro:arg name="ros2_control_plugin" default="mock_components/GenericSystem"/>
+
+  <xacro:property name="mesh_base" value="package://$(arg mesh_package)/$(arg mesh_dir)"/>
+
+  <!-- ==================== GROUND-TRUTH PARAMETERS ==================== -->
+  <xacro:include filename="ecr88_params.xacro"/>
+
+  <!-- =====================================================================
+       ARITHMETIC CONSTANTS  (pure maths, NOT machine data)
+       ===================================================================== -->
+  <xacro:property name="half"    value="0.5"/>
+  <xacro:property name="half_pi" value="${pi * 0.5}"/>
+
+  <!-- Inertia of a uniform box, expressed in the frame given by <origin>. -->
+  <xacro:macro name="inertial_box" params="mass x y z xyz:='0 0 0' rpy:='0 0 0'">
+    <inertial>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+      <mass value="${mass}"/>
+      <inertia ixx="${mass * (y*y + z*z) / 12.0}" ixy="0" ixz="0"
+               iyy="${mass * (x*x + z*z) / 12.0}" iyz="0"
+               izz="${mass * (x*x + y*y) / 12.0}"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- Inertia of a uniform cylinder about its local Z, in the <origin> frame. -->
+  <xacro:macro name="inertial_cylinder" params="mass radius length xyz:='0 0 0' rpy:='0 0 0'">
+    <inertial>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+      <mass value="${mass}"/>
+      <inertia ixx="${mass * (3.0*radius*radius + length*length) / 12.0}" ixy="0" ixz="0"
+               iyy="${mass * (3.0*radius*radius + length*length) / 12.0}" iyz="0"
+               izz="${mass * radius * radius * 0.5}"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- Inertia of a uniform sphere (marker / frame-only links). -->
+  <xacro:macro name="inertial_sphere" params="mass radius xyz:='0 0 0'">
+    <inertial>
+      <origin xyz="${xyz}" rpy="0 0 0"/>
+      <mass value="${mass}"/>
+      <inertia ixx="${2.0 * mass * radius * radius / 5.0}" ixy="0" ixz="0"
+               iyy="${2.0 * mass * radius * radius / 5.0}" iyz="0"
+               izz="${2.0 * mass * radius * radius / 5.0}"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- visual+collision pair. Primitive branch and mesh branch carry independent
+       origins, because a mesh is authored in the link frame while a primitive needs
+       to be offset to its own centroid. Flip $(arg use_meshes) to switch. -->
+  <xacro:macro name="viscol"
+               params="name material:='xpanner_yellow'
+                       xyz:='0 0 0' rpy:='0 0 0'
+                       mesh_xyz:='0 0 0' mesh_rpy:='0 0 0' *prim">
+    <visual>
+      <xacro:if value="$(arg use_meshes)">
+        <origin xyz="${mesh_xyz}" rpy="${mesh_rpy}"/>
+        <geometry>
+          <mesh filename="${mesh_base}/${name}.$(arg mesh_visual_ext)" scale="1 1 1"/>
+        </geometry>
+      </xacro:if>
+      <xacro:unless value="$(arg use_meshes)">
+        <origin xyz="${xyz}" rpy="${rpy}"/>
+        <geometry><xacro:insert_block name="prim"/></geometry>
+      </xacro:unless>
+      <material name="${material}"/>
+    </visual>
+    <collision>
+      <xacro:if value="$(arg use_meshes)">
+        <origin xyz="${mesh_xyz}" rpy="${mesh_rpy}"/>
+        <geometry>
+          <mesh filename="${mesh_base}/${name}_collision.$(arg mesh_collision_ext)" scale="1 1 1"/>
+        </geometry>
+      </xacro:if>
+      <xacro:unless value="$(arg use_meshes)">
+        <origin xyz="${xyz}" rpy="${rpy}"/>
+        <geometry><xacro:insert_block name="prim"/></geometry>
+      </xacro:unless>
+    </collision>
+  </xacro:macro>
+
+  <!-- A structural member drawn as a capsule-ish cylinder running from the link origin
+       to the offset (dx,dy,dz). Length and pitch are DERIVED from the offset, so the
+       visual can never disagree with the kinematics. Y-planar members only (dy ignored
+       for the pitch, which matches every member on this machine: all dist*_y are 0
+       except distChsToBmMnt / distAntMain*, which are not drawn this way). -->
+  <xacro:macro name="member_cylinder" params="radius dx dy dz">
+    <cylinder radius="${radius}" length="${sqrt(dx*dx + dy*dy + dz*dz)}"/>
+  </xacro:macro>
+
+  <!-- ============================ MATERIALS ============================ -->
+  <!-- Cosmetic only. -->
+  <material name="xpanner_yellow"><color rgba="0.90 0.72 0.05 1"/></material>
+  <material name="xpanner_dark">  <color rgba="0.18 0.18 0.20 1"/></material>
+  <material name="xpanner_steel"> <color rgba="0.55 0.57 0.60 1"/></material>
+  <material name="xpanner_accent"><color rgba="0.85 0.25 0.10 1"/></material>
+  <material name="xpanner_frame"> <color rgba="0.10 0.60 0.90 1"/></material>
+
+  <!-- =====================================================================
+       1. UNDERCARRIAGE
+       base_link origin = the Chs (chassis) reference of the parameter sheet:
+       on the swing axis, in the boom-foot-pin plane (distChsToBmMnt_z = 0 proves
+       BmMnt shares the Chs height). GROUND IS AT z = lenBottomZ1 (T7).
+       Undercarriage vertical extent is DERIVED: lenUppZ1 - lenBottomZ1 (= 0.775 m),
+       i.e. from the track bottom up to the house floor.
+       ===================================================================== -->
+  <link name="base_link">
+    <xacro:inertial_box mass="${m_base}"
+                        x="${lenBottomX}" y="${lenBottomY - geo_track_w - geo_track_w}"
+                        z="${lenUppZ1 - lenBottomZ1}"
+                        xyz="0 0 ${(lenBottomZ1 + lenUppZ1) * half}"/>
+    <!-- Centre frame between the tracks. Centred on the swing axis - see T6.
+         Raw-corner alternative (one edit away, use if T6 is ever resolved in favour
+         of the sheet corners):
+           xyz="${lenBottomX1 + lenBottomX*half} ${lenBottomY1 + lenBottomY*half} ..." -->
+    <xacro:viscol name="base_link" material="xpanner_dark"
+                  xyz="0 0 ${(lenBottomZ1 + lenUppZ1) * half}">
+      <box size="${lenBottomX} ${lenBottomY - geo_track_w - geo_track_w} ${lenUppZ1 - lenBottomZ1}"/>
+    </xacro:viscol>
+  </link>
+
+  <!-- Tracks. FIXED for now (T12): travel is not simulated yet. To drive the machine,
+       change these to `continuous` with <axis xyz="0 1 0"/> and add wheel/track links,
+       or drive base_link directly from a velocity controller. Left = +Y (REP-103). -->
+  <link name="track_left_link">
+    <xacro:inertial_box mass="${m_track}"
+                        x="${lenBottomX}" y="${geo_track_w}" z="${lenUppZ1 - lenBottomZ1}"
+                        xyz="0 0 ${(lenBottomZ1 + lenUppZ1) * half}"/>
+    <xacro:viscol name="track_left_link" material="xpanner_dark"
+                  xyz="0 0 ${(lenBottomZ1 + lenUppZ1) * half}">
+      <box size="${lenBottomX} ${geo_track_w} ${lenUppZ1 - lenBottomZ1}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="track_left_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="track_left_link"/>
+    <origin xyz="0 ${(lenBottomY - geo_track_w) * half} 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="track_right_link">
+    <xacro:inertial_box mass="${m_track}"
+                        x="${lenBottomX}" y="${geo_track_w}" z="${lenUppZ1 - lenBottomZ1}"
+                        xyz="0 0 ${(lenBottomZ1 + lenUppZ1) * half}"/>
+    <xacro:viscol name="track_right_link" material="xpanner_dark"
+                  xyz="0 0 ${(lenBottomZ1 + lenUppZ1) * half}">
+      <box size="${lenBottomX} ${geo_track_w} ${lenUppZ1 - lenBottomZ1}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="track_right_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="track_right_link"/>
+    <origin xyz="0 ${-(lenBottomY - geo_track_w) * half} 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- =====================================================================
+       2. SWING / HOUSE  (upper structure)
+       The Chs frame IS the swing axis, so this joint has a zero origin. The sheet
+       contains no Uc->Chs offset, which is consistent with that reading.
+       House box: sizes from lenUppX/lenUppY, floor at lenUppZ1, height ESTIMATE (T6).
+       ===================================================================== -->
+  <link name="house_link">
+    <xacro:inertial_box mass="${m_house}"
+                        x="${lenUppX}" y="${lenUppY}" z="${geo_house_h}"
+                        xyz="0 0 ${lenUppZ1 + geo_house_h * half}"/>
+    <xacro:viscol name="house_link" material="xpanner_yellow"
+                  xyz="0 0 ${lenUppZ1 + geo_house_h * half}">
+      <box size="${lenUppX} ${lenUppY} ${geo_house_h}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="swing_joint" type="revolute">
+    <parent link="base_link"/>
+    <child  link="house_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <!-- ESTIMATE limits (T2). Real machine slews endlessly (T16). -->
+    <limit lower="${lim_swing_lower}" upper="${lim_swing_upper}"
+           effort="${eff_swing}" velocity="${vel_swing}"/>
+    <dynamics damping="${dyn_damping}" friction="${dyn_friction}"/>
+  </joint>
+
+  <!-- =====================================================================
+       3. GNSS  (dual-antenna heading pair, rigid on the house)
+       distAntMainToChs is Ant -> Chs, so the Chs -> Ant transform is its NEGATION.
+       distAntMainToAntAux is defined Main -> Aux, so gnss_aux is parented to
+       gnss_main rather than to the house: it keeps the published baseline exactly
+       equal to the calibrated one.
+       The antenna Z carries a bolt-height correction in the source deck
+       ((1.345 + 0.053) * -1); the sheet value -1.416 already includes it.
+       ===================================================================== -->
+  <link name="gnss_main_link">
+    <xacro:inertial_sphere mass="${m_marker}" radius="${geo_marker_r}"/>
+    <xacro:viscol name="gnss_main_link" material="xpanner_accent">
+      <sphere radius="${geo_marker_r}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="gnss_main_joint" type="fixed">
+    <parent link="house_link"/>
+    <child  link="gnss_main_link"/>
+    <origin xyz="${-distAntMainToChs_x} ${-distAntMainToChs_y} ${-distAntMainToChs_z}"
+            rpy="0 0 0"/>
+  </joint>
+
+  <link name="gnss_aux_link">
+    <xacro:inertial_sphere mass="${m_marker}" radius="${geo_marker_r}"/>
+    <xacro:viscol name="gnss_aux_link" material="xpanner_accent">
+      <sphere radius="${geo_marker_r}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="gnss_aux_joint" type="fixed">
+    <parent link="gnss_main_link"/>
+    <child  link="gnss_aux_link"/>
+    <origin xyz="${distAntMainToAntAux_x} ${distAntMainToAntAux_y} ${distAntMainToAntAux_z}"
+            rpy="0 0 0"/>
+  </joint>
+
+  <!-- =====================================================================
+       4. BOOM MOUNT  (BmMnt)
+       distChsToBmMnt = (0.94, -0.15, 0). The Y term is the one the source deck
+       sign-flips on the MC1 -> X1 conversion (0.15 * -1); the sheet value is already
+       in X1 PanelLift convention - do NOT re-flip it.
+       If the BoomSwing option is fitted, this fixed joint becomes a revolute about Z
+       and distBmMntToBm1 (the boom joint origin below) stops being zero.
+       ===================================================================== -->
+  <link name="boom_mount_link">
+    <xacro:inertial_sphere mass="${m_marker}" radius="${geo_marker_r}"/>
+    <xacro:viscol name="boom_mount_link" material="xpanner_steel">
+      <sphere radius="${geo_marker_r}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="boom_mount_joint" type="fixed">
+    <parent link="house_link"/>
+    <child  link="boom_mount_link"/>
+    <origin xyz="${distChsToBmMnt_x} ${distChsToBmMnt_y} ${distChsToBmMnt_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Boom cylinder LARGE (cap/base) end pin, on the boom mount.
+       CROSS-CHECK: |distCylLrgBm1| = sqrt(0.272^2 + 0.391^2) = 0.4765 = lenToCylLrgBm1,
+       atan2(0.391, 0.272) = 55.19 deg = angCylLrgBm1 (55.2). Consistent. -->
+  <link name="cyl_lrg_bm1_link">
+    <xacro:inertial_sphere mass="${m_marker}" radius="${geo_marker_r}"/>
+    <xacro:viscol name="cyl_lrg_bm1_link" material="xpanner_frame">
+      <sphere radius="${geo_marker_r}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="cyl_lrg_bm1_joint" type="fixed">
+    <parent link="boom_mount_link"/>
+    <child  link="cyl_lrg_bm1_link"/>
+    <origin xyz="${distCylLrgBm1_x} ${distCylLrgBm1_y} ${distCylLrgBm1_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- =====================================================================
+       5. BOOM  (Bm1; lenBm2 = 0, dual-boom option absent - T14)
+       ===================================================================== -->
+  <link name="boom_link">
+    <xacro:inertial_cylinder mass="${m_boom}" radius="${geo_boom_r}"
+                             length="${lenBm1 + lenBm2}"
+                             xyz="${(lenBm1 + lenBm2) * half} 0 0" rpy="0 ${half_pi} 0"/>
+    <xacro:viscol name="boom_link" material="xpanner_yellow"
+                  xyz="${(lenBm1 + lenBm2) * half} 0 0" rpy="0 ${half_pi} 0">
+      <cylinder radius="${geo_boom_r}" length="${lenBm1 + lenBm2}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="boom_joint" type="revolute">
+    <parent link="boom_mount_link"/>
+    <child  link="boom_link"/>
+    <!-- distBmMntToBm1 is (0,0,0) unless the BoomSwing sensor option is mounted. -->
+    <origin xyz="${distBmMntToBm1_x} ${distBmMntToBm1_y} ${distBmMntToBm1_z}" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="${lim_boom_lower}" upper="${lim_boom_upper}"
+           effort="${eff_boom}" velocity="${vel_boom}"/>
+    <dynamics damping="${dyn_damping}" friction="${dyn_friction}"/>
+  </joint>
+
+  <!-- Boom cylinder SMALL (rod) end pin, on the boom.
+       CROSS-CHECK: |distCylSmlBm1| = sqrt(1.715^2 + 0.58^2) = 1.810 = lenToCylSmlBm1,
+       atan2(0.58, 1.715) = 18.68 deg = |angCylSmlBm1| (sheet signs it negative). -->
+  <link name="cyl_sml_bm1_link">
+    <xacro:inertial_sphere mass="${m_marker}" radius="${geo_marker_r}"/>
+    <xacro:viscol name="cyl_sml_bm1_link" material="xpanner_frame">
+      <sphere radius="${geo_marker_r}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="cyl_sml_bm1_joint" type="fixed">
+    <parent link="boom_link"/>
+    <child  link="cyl_sml_bm1_link"/>
+    <origin xyz="${distCylSmlBm1_x} ${distCylSmlBm1_y} ${distCylSmlBm1_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Arm cylinder LARGE (cap/base) end pin, on the boom, referenced from the BOOM TIP
+       (T8): distCylLrgArm_x is -1.508, which only makes sense measured back from the
+       arm pin. CROSS-CHECK: |distCylLrgArm| = sqrt(1.508^2 + 1.08^2) = 1.855 =
+       lenToCylLrgArm, atan2(1.08, -1.508) = 144.4 deg = |angCylLrgArm|. -->
+  <link name="cyl_lrg_arm_link">
+    <xacro:inertial_sphere mass="${m_marker}" radius="${geo_marker_r}"/>
+    <xacro:viscol name="cyl_lrg_arm_link" material="xpanner_frame">
+      <sphere radius="${geo_marker_r}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="cyl_lrg_arm_joint" type="fixed">
+    <parent link="boom_link"/>
+    <child  link="cyl_lrg_arm_link"/>
+    <origin xyz="${lenBm1 + lenBm2 + distCylLrgArm_x} ${distCylLrgArm_y} ${distCylLrgArm_z}"
+            rpy="0 0 0"/>
+  </joint>
+
+  <!-- =====================================================================
+       6. ARM  (stick)
+       ===================================================================== -->
+  <link name="arm_link">
+    <xacro:inertial_cylinder mass="${m_arm}" radius="${geo_arm_r}" length="${lenArm}"
+                             xyz="${lenArm * half} 0 0" rpy="0 ${half_pi} 0"/>
+    <xacro:viscol name="arm_link" material="xpanner_yellow"
+                  xyz="${lenArm * half} 0 0" rpy="0 ${half_pi} 0">
+      <cylinder radius="${geo_arm_r}" length="${lenArm}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="arm_joint" type="revolute">
+    <parent link="boom_link"/>
+    <child  link="arm_link"/>
+    <origin xyz="${lenBm1 + lenBm2} 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="${lim_arm_lower}" upper="${lim_arm_upper}"
+           effort="${eff_arm}" velocity="${vel_arm}"/>
+    <dynamics damping="${dyn_damping}" friction="${dyn_friction}"/>
+  </joint>
+
+  <!-- =====================================================================
+       7. BUCKET LINKAGE - 4-BAR  (InpLink / ConnRod / OutpLink / GndLink)
+       .....................................................................
+       GEOMETRY, as proven from the sheet (no assumption in this paragraph):
+         arm tip / bucket pin  = (lenArm, 0, 0)            = (1.7,   0, 0)
+         input-link pin        = distArmToInpLink          = (1.441, 0, 0.0185)
+         ground link           = bucket pin -> input pin   = (-0.259, 0, 0.0185)
+                                 |v| = 0.2597 = lenGndLink                        CHECK
+                                 atan(0.0185/0.2597) = 4.09 deg = angArmToGndLink  CHECK
+       So ground_link is the arm-side member of the 4-bar; its frame origin is placed
+       AT THE BUCKET PIN, which is also where distOutpLinkToTiltMnt = (0,0,0) says the
+       tiltrotator hangs. That fixes the topology unambiguously.
+       ===================================================================== -->
+
+  <!-- MIMIC / closed-loop =================================================
+       URDF is a tree; the 4-bar is a loop. THE CUT IS AT THE CONNROD / OUTPLINK PIN.
+         load path (simulated):  ground_link -[bucket_joint]-> output_link -> tiltrotator
+         dressing branch:        ground_link -[input_link_joint]-> input_link
+                                             -[conn_rod_joint]-> conn_rod_link (cut end)
+       CONSTRAINT TO RE-IMPOSE IN USD (Isaac PhysX D6 / fixed joint, revolute about Y):
+         conn_rod_link   frame + (lenConnRod,  0, 0)
+             MUST COINCIDE WITH
+         output_link     frame + (lenOutpLink, 0, 0)
+       input_link_joint carries a <mimic> on bucket_joint because that is the only
+       loop coupling URDF can express, BUT the true 4-bar relation is NON-LINEAR - a
+       linear multiplier/offset cannot reproduce it. bkt_mimic_mult / bkt_mimic_off are
+       ESTIMATE placeholders (T5/F): fit them to the real linkage, or better, delete the
+       mimic and drive the branch from the USD loop constraint. The dressing branch is
+       VISUAL ONLY; do not read joint torque off it.
+       Set  model_bucket_fourbar:=false  to drop the branch entirely (recommended for
+       any physics run that is not solving the loop - two free links dangling off the
+       tool are a solver liability).
+       ===================================================================== -->
+  <link name="ground_link">
+    <xacro:inertial_cylinder mass="${m_gnd_link}" radius="${geo_linkage_r}"
+                             length="${lenGndLink}"
+                             xyz="${(distArmToInpLink_x - lenArm) * half} ${distArmToInpLink_y * half} ${distArmToInpLink_z * half}"
+                             rpy="0 ${atan2(distArmToInpLink_x - lenArm, distArmToInpLink_z)} 0"/>
+    <xacro:viscol name="ground_link" material="xpanner_steel"
+                  xyz="${(distArmToInpLink_x - lenArm) * half} ${distArmToInpLink_y * half} ${distArmToInpLink_z * half}"
+                  rpy="0 ${atan2(distArmToInpLink_x - lenArm, distArmToInpLink_z)} 0">
+      <xacro:member_cylinder radius="${geo_linkage_r}"
+                             dx="${distArmToInpLink_x - lenArm}"
+                             dy="${distArmToInpLink_y}"
+                             dz="${distArmToInpLink_z}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="ground_link_joint" type="fixed">
+    <parent link="arm_link"/>
+    <child  link="ground_link"/>
+    <!-- origin = arm tip = bucket pin. The ground link's own direction is derived by
+         atan2 above rather than taken from angArmToGndLink - see T14c. -->
+    <origin xyz="${lenArm} 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- OUTPUT LINK = the member pinned at the bucket pin. This IS the bucket joint, and
+       it is the load path to the tiltrotator (distOutpLinkToTiltMnt = 0 confirms the
+       OutpLink frame origin is the bucket pin). -->
+  <link name="output_link">
+    <xacro:inertial_cylinder mass="${m_outp_link}" radius="${geo_linkage_r}"
+                             length="${lenOutpLink}"
+                             xyz="${lenOutpLink * half} 0 0" rpy="0 ${half_pi} 0"/>
+    <xacro:viscol name="output_link" material="xpanner_steel"
+                  xyz="${lenOutpLink * half} 0 0" rpy="0 ${half_pi} 0">
+      <cylinder radius="${geo_linkage_r}" length="${lenOutpLink}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="bucket_joint" type="revolute">
+    <parent link="ground_link"/>
+    <child  link="output_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="${lim_bucket_lower}" upper="${lim_bucket_upper}"
+           effort="${eff_bucket}" velocity="${vel_bucket}"/>
+    <dynamics damping="${dyn_damping}" friction="${dyn_friction}"/>
+  </joint>
+
+  <xacro:if value="$(arg model_bucket_fourbar)">
+    <!-- INPUT LINK (power/crank link), pinned to the arm at distArmToInpLink. -->
+    <link name="input_link">
+      <xacro:inertial_cylinder mass="${m_inp_link}" radius="${geo_linkage_r}"
+                               length="${lenInpLink}"
+                               xyz="${lenInpLink * half} 0 0" rpy="0 ${half_pi} 0"/>
+      <xacro:viscol name="input_link" material="xpanner_steel"
+                    xyz="${lenInpLink * half} 0 0" rpy="0 ${half_pi} 0">
+        <cylinder radius="${geo_linkage_r}" length="${lenInpLink}"/>
+      </xacro:viscol>
+    </link>
+    <joint name="input_link_joint" type="revolute">
+      <parent link="ground_link"/>
+      <child  link="input_link"/>
+      <!-- ground_link origin is the bucket pin, so the input pin is offset by the
+           ground-link vector: distArmToInpLink - (lenArm, 0, 0). -->
+      <origin xyz="${distArmToInpLink_x - lenArm} ${distArmToInpLink_y} ${distArmToInpLink_z}"
+              rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="${lim_inp_link_lower}" upper="${lim_inp_link_upper}"
+             effort="${eff_inp_link}" velocity="${vel_inp_link}"/>
+      <dynamics damping="${dyn_damping}" friction="${dyn_friction}"/>
+      <!-- PLACEHOLDER COUPLING - see the MIMIC / closed-loop block above. -->
+      <mimic joint="bucket_joint" multiplier="${bkt_mimic_mult}" offset="${bkt_mimic_off}"/>
+    </joint>
+
+    <!-- CONNECTING ROD (idler). This is the CUT member: its far end
+         (+lenConnRod along X) must coincide with output_link + lenOutpLink along X. -->
+    <link name="conn_rod_link">
+      <xacro:inertial_cylinder mass="${m_conn_rod}" radius="${geo_linkage_r}"
+                               length="${lenConnRod}"
+                               xyz="${lenConnRod * half} 0 0" rpy="0 ${half_pi} 0"/>
+      <xacro:viscol name="conn_rod_link" material="xpanner_steel"
+                    xyz="${lenConnRod * half} 0 0" rpy="0 ${half_pi} 0">
+        <cylinder radius="${geo_linkage_r}" length="${lenConnRod}"/>
+      </xacro:viscol>
+    </link>
+    <joint name="conn_rod_joint" type="revolute">
+      <parent link="input_link"/>
+      <child  link="conn_rod_link"/>
+      <origin xyz="${lenInpLink} 0 0" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <!-- Cannot be mimicked: no legal URDF expression closes the loop. Free joint. -->
+      <limit lower="${lim_conn_rod_lower}" upper="${lim_conn_rod_upper}"
+             effort="${eff_conn_rod}" velocity="${vel_conn_rod}"/>
+      <dynamics damping="${dyn_damping}" friction="${dyn_friction}"/>
+    </joint>
+  </xacro:if>
+
+  <!-- =====================================================================
+       8. TILTROTATOR  (model JK, without tilt-coupler option)
+       distOutpLinkToTiltMnt = (0,0,0), angOutpLinkToTiltMnt = 0.
+       angTiltMntToTilt = pi/180*1.736 is a genuine non-zero MOUNTING offset, not a
+       limit - it is applied as the rpy pitch of tilt_joint's origin.
+       "Tilt = Rot" in the source: tilt and rotate axes are coincident, hence the
+       zero-translation rotator_joint origin.
+       ===================================================================== -->
+  <link name="tilt_mount_link">
+    <xacro:inertial_cylinder mass="${m_tilt_mount}" radius="${geo_tr_r}"
+                             length="${sqrt(distTiltMntToTilt_x*distTiltMntToTilt_x + distTiltMntToTilt_y*distTiltMntToTilt_y + distTiltMntToTilt_z*distTiltMntToTilt_z)}"
+                             xyz="${distTiltMntToTilt_x * half} ${distTiltMntToTilt_y * half} ${distTiltMntToTilt_z * half}"
+                             rpy="0 ${atan2(distTiltMntToTilt_x, distTiltMntToTilt_z)} 0"/>
+    <xacro:viscol name="tilt_mount_link" material="xpanner_steel"
+                  xyz="${distTiltMntToTilt_x * half} ${distTiltMntToTilt_y * half} ${distTiltMntToTilt_z * half}"
+                  rpy="0 ${atan2(distTiltMntToTilt_x, distTiltMntToTilt_z)} 0">
+      <xacro:member_cylinder radius="${geo_tr_r}"
+                             dx="${distTiltMntToTilt_x}"
+                             dy="${distTiltMntToTilt_y}"
+                             dz="${distTiltMntToTilt_z}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="tilt_mount_joint" type="fixed">
+    <parent link="output_link"/>
+    <child  link="tilt_mount_link"/>
+    <origin xyz="${distOutpLinkToTiltMnt_x} ${distOutpLinkToTiltMnt_y} ${distOutpLinkToTiltMnt_z}"
+            rpy="0 ${angOutpLinkToTiltMnt} 0"/>
+  </joint>
+
+  <!-- TILT. Axis ASSUMED +X (T3): a tiltrotator tilts the tool sideways, i.e. rolls
+       about the fore-aft axis, perpendicular to the rotator's Z. Not in any source. -->
+  <link name="tilt_link">
+    <xacro:inertial_cylinder mass="${m_tilt}" radius="${geo_tr_r}" length="${geo_tr_r}"/>
+    <xacro:viscol name="tilt_link" material="xpanner_dark">
+      <cylinder radius="${geo_tr_r}" length="${geo_tr_r}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="tilt_joint" type="revolute">
+    <parent link="tilt_mount_link"/>
+    <child  link="tilt_link"/>
+    <origin xyz="${distTiltMntToTilt_x} ${distTiltMntToTilt_y} ${distTiltMntToTilt_z}"
+            rpy="0 ${angTiltMntToTilt} 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="${lim_tilt_lower}" upper="${lim_tilt_upper}"
+           effort="${eff_tilt}" velocity="${vel_tilt}"/>
+    <dynamics damping="${dyn_damping}" friction="${dyn_friction}"/>
+  </joint>
+
+  <!-- ROTATOR. Continuous about Z - endless tool rotation. The rotator body is drawn
+       spanning Rot -> Att, whose length is DERIVED from distRotToAtt. -->
+  <link name="rotator_link">
+    <xacro:inertial_cylinder mass="${m_rotator}" radius="${geo_tr_r}"
+                             length="${sqrt(distRotToAtt_x*distRotToAtt_x + distRotToAtt_y*distRotToAtt_y + distRotToAtt_z*distRotToAtt_z)}"
+                             xyz="${distRotToAtt_x * half} ${distRotToAtt_y * half} ${distRotToAtt_z * half}"/>
+    <xacro:viscol name="rotator_link" material="xpanner_dark"
+                  xyz="${distRotToAtt_x * half} ${distRotToAtt_y * half} ${distRotToAtt_z * half}">
+      <xacro:member_cylinder radius="${geo_tr_r}"
+                             dx="${distRotToAtt_x}" dy="${distRotToAtt_y}" dz="${distRotToAtt_z}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="rotator_joint" type="continuous">
+    <parent link="tilt_link"/>
+    <child  link="rotator_link"/>
+    <!-- "Tilt = Rot": tilt and rotate share a point -> zero translation. -->
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="${eff_rotator}" velocity="${vel_rotator}"/>
+    <dynamics damping="${dyn_damping}" friction="${dyn_friction}"/>
+  </joint>
+
+  <!-- =====================================================================
+       9. ATTACHMENT / PANEL-LIFT SUCTION TOOL
+       Att. = "Attachment Centre Of Rotation". The adapter body is drawn spanning
+       Att -> Probe, the probe body Probe -> ContactSurface, both DERIVED.
+       SHEET CHECK: distAttToProbe + distProbeToContactSurface
+                    = (0.35+0.1, 0, -0.572-0.264) = (0.45, 0, -0.836)
+                    = distAttToContactSurface exactly. The cumulative parameter is
+                    therefore redundant here and is deliberately NOT used - the chain
+                    reproduces it. (`old` sheet LenSDZ -0.84 corroborates the -0.836.)
+       ===================================================================== -->
+  <link name="attachment_link">
+    <xacro:inertial_cylinder mass="${m_attachment}" radius="${geo_tr_r}"
+                             length="${sqrt(distAttToProbe_x*distAttToProbe_x + distAttToProbe_y*distAttToProbe_y + distAttToProbe_z*distAttToProbe_z)}"
+                             xyz="${distAttToProbe_x * half} ${distAttToProbe_y * half} ${distAttToProbe_z * half}"
+                             rpy="0 ${atan2(distAttToProbe_x, distAttToProbe_z)} 0"/>
+    <xacro:viscol name="attachment_link" material="xpanner_steel"
+                  xyz="${distAttToProbe_x * half} ${distAttToProbe_y * half} ${distAttToProbe_z * half}"
+                  rpy="0 ${atan2(distAttToProbe_x, distAttToProbe_z)} 0">
+      <xacro:member_cylinder radius="${geo_tr_r}"
+                             dx="${distAttToProbe_x}" dy="${distAttToProbe_y}" dz="${distAttToProbe_z}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="attachment_joint" type="fixed">
+    <parent link="rotator_link"/>
+    <child  link="attachment_link"/>
+    <origin xyz="${distRotToAtt_x} ${distRotToAtt_y} ${distRotToAtt_z}"
+            rpy="0 ${angRotToAtt} 0"/>
+  </joint>
+
+  <link name="probe_link">
+    <xacro:inertial_cylinder mass="${m_probe}" radius="${geo_linkage_r}"
+                             length="${sqrt(distProbeToContactSurface_x*distProbeToContactSurface_x + distProbeToContactSurface_y*distProbeToContactSurface_y + distProbeToContactSurface_z*distProbeToContactSurface_z)}"
+                             xyz="${distProbeToContactSurface_x * half} ${distProbeToContactSurface_y * half} ${distProbeToContactSurface_z * half}"
+                             rpy="0 ${atan2(distProbeToContactSurface_x, distProbeToContactSurface_z)} 0"/>
+    <xacro:viscol name="probe_link" material="xpanner_accent"
+                  xyz="${distProbeToContactSurface_x * half} ${distProbeToContactSurface_y * half} ${distProbeToContactSurface_z * half}"
+                  rpy="0 ${atan2(distProbeToContactSurface_x, distProbeToContactSurface_z)} 0">
+      <xacro:member_cylinder radius="${geo_linkage_r}"
+                             dx="${distProbeToContactSurface_x}"
+                             dy="${distProbeToContactSurface_y}"
+                             dz="${distProbeToContactSurface_z}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="probe_joint" type="fixed">
+    <parent link="attachment_link"/>
+    <child  link="probe_link"/>
+    <origin xyz="${distAttToProbe_x} ${distAttToProbe_y} ${distAttToProbe_z}"
+            rpy="0 ${angAttToProbe} 0"/>
+  </joint>
+
+  <!-- THE PANELLIFT WORKING FRAME / TCP. Publish this one.
+       The suction pad plate sits ABOVE the contact plane, so the pad box is offset by
+       +half its thickness; the link origin itself is exactly on the working surface.
+       Pad footprint is an ESTIMATE: `old` sheet gives LenSDX = LenSDY = 0 for ECR88
+       (pad width/height never measured), only LenSDZ = -0.84. -->
+  <link name="contact_surface_link">
+    <xacro:inertial_box mass="${m_contact_surface}"
+                        x="${geo_pad_x}" y="${geo_pad_y}" z="${geo_pad_t}"
+                        xyz="0 0 ${geo_pad_t * half}"/>
+    <xacro:viscol name="contact_surface_link" material="xpanner_accent"
+                  xyz="0 0 ${geo_pad_t * half}">
+      <box size="${geo_pad_x} ${geo_pad_y} ${geo_pad_t}"/>
+    </xacro:viscol>
+  </link>
+  <joint name="contact_surface_joint" type="fixed">
+    <parent link="probe_link"/>
+    <child  link="contact_surface_link"/>
+    <origin xyz="${distProbeToContactSurface_x} ${distProbeToContactSurface_y} ${distProbeToContactSurface_z}"
+            rpy="0 ${angProbeToContactSurface} 0"/>
+  </joint>
+
+  <!-- =====================================================================
+       10. ros2_control
+       Default plugin is mock_components/GenericSystem so the description loads
+       standalone. For Isaac Sim, pass
+         ros2_control_plugin:=topic_based_ros2_control/TopicBasedSystem
+       and add the joint_states/joint_commands topic params, or drive the
+       articulation from an OmniGraph ROS 2 publisher/subscriber and leave this off.
+       The 4-bar dressing joints (input_link_joint, conn_rod_joint) are deliberately
+       EXCLUDED: a mimic joint must not carry a command interface, and conn_rod_joint
+       is a cut joint with no actuator behind it.
+       ===================================================================== -->
+  <xacro:macro name="ecr88_ros2_control_joint" params="name">
+    <joint name="${name}">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:if value="$(arg use_ros2_control)">
+    <ros2_control name="ecr88_system" type="system">
+      <hardware>
+        <plugin>$(arg ros2_control_plugin)</plugin>
+      </hardware>
+      <xacro:ecr88_ros2_control_joint name="swing_joint"/>
+      <xacro:ecr88_ros2_control_joint name="boom_joint"/>
+      <xacro:ecr88_ros2_control_joint name="arm_joint"/>
+      <xacro:ecr88_ros2_control_joint name="bucket_joint"/>
+      <xacro:ecr88_ros2_control_joint name="tilt_joint"/>
+      <xacro:ecr88_ros2_control_joint name="rotator_joint"/>
+    </ros2_control>
+  </xacro:if>
+
+</robot>
