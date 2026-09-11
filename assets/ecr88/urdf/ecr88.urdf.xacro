@@ -1192,10 +1192,17 @@
     <xacro:cam_mount name="cam_cab_roof" parent="house_link"
                      xyz="${lenUppX * half - 0.10} ${lenUppY * half - 0.50} ${lenUppZ1 + geo_house_h - 0.05}"
                      rpy="0 ${pi/180*25} 0"/>
-    <!-- House front deck, beside the boom foot, on the boom's own side (-Y). -->
+    <!-- House front deck, beside the boom foot, on the boom's own side (-Y).
+         RAISED AND FLATTENED 2026-09-11. It sat 0.10 m above the deck at 20 deg down,
+         and from that low a mount 20 deg is enough to fill the frame with dirt. Lifting
+         it to 0.45 m above the deck and easing to 10 deg puts the horizon back in the
+         picture without giving up the near ground: paired with the 120 deg lens in
+         sensors.json the vertical half-angle is about 49 deg, so it still sees from
+         39 deg above the horizon down to 59 deg below it. Coverage re-checked with
+         camera_study.py after the change, not assumed. -->
     <xacro:cam_mount name="cam_house_front" parent="house_link"
-                     xyz="${lenUppX * half - 0.15} ${-0.55} ${lenUppZ1 + geo_deck_h + 0.10}"
-                     rpy="0 ${pi/180*20} 0"/>
+                     xyz="${lenUppX * half - 0.15} ${-0.55} ${lenUppZ1 + geo_deck_h + 0.45}"
+                     rpy="0 ${pi/180*10} 0"/>
     <!-- Mid boom, outboard side, aimed along the boom at the tool. -->
     <xacro:cam_mount name="cam_boom_mid" parent="boom_link"
                      xyz="${(lenBm1 + lenBm2) * geo_boom_apex_frac} ${-(geo_boom_sec_w * half + 0.08)} ${geo_boom_rise * 0.6}"

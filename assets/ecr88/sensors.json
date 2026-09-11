@@ -1,0 +1,37 @@
+{
+  "_comment": [
+    "Per-camera optics. SINGLE SOURCE for both scripts:",
+    "  scripts/add_cameras.py   authors the USD cameras you look through",
+    "  scripts/camera_study.py  computes the coverage numbers",
+    "They used to each carry their own default and could silently drift, so a table",
+    "and a picture would stop describing the same sensor. Read from here instead.",
+    "",
+    "hfov is the HORIZONTAL field of view in degrees. Vertical follows from the 4:3",
+    "aperture, so 120 H gives about 98 V.",
+    "",
+    "These are CHOICES, not measurements: no lens has been selected for this machine.",
+    "Pick real parts and put their numbers here."
+  ],
+
+  "default": { "hfov": 90.0 },
+
+  "cam_house_front": {
+    "hfov": 120.0,
+    "_why": "Sits low on the front deck, so at any useful down-angle the ground fills a lot of the frame. A wide lens buys back the context above the horizon without giving up the near ground."
+  },
+  "cam_cab_roof": {
+    "hfov": 110.0,
+    "_why": "Covers both the cups and the row from one mount; it needs the breadth."
+  },
+  "cam_fork_mast": {
+    "hfov": 100.0,
+    "_why": "Looks down at the stack from 1.2 m. Wide enough to hold the whole module plus the cups coming in."
+  },
+  "cam_tool_side": {
+    "hfov": 90.0,
+    "_why": "Close-range grip check at 1.1 m. Wider than this and the cups get small in frame, which is the opposite of the point."
+  },
+  "cam_arm_tip": { "hfov": 90.0 },
+  "cam_boom_mid": { "hfov": 90.0 },
+  "cam_tool": { "hfov": 90.0 }
+}

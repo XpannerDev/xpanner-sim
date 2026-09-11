@@ -191,8 +191,11 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--urdf", type=Path, required=True, help="FLAT urdf (expand the xacro first)")
-    ap.add_argument("--fov-h", type=float, default=FOV_H_DEG)
-    ap.add_argument("--fov-v", type=float, default=FOV_V_DEG)
+    ap.add_argument("--sensors", type=Path, default=None,
+                    help="per-camera optics json, shared with add_cameras.py. "
+                         "Default: assets/ecr88/sensors.json")
+    ap.add_argument("--fov-h", type=float, default=None,
+                    help="override every camera's horizontal FOV, degrees")
     ap.add_argument("--ignore-tool-adapter", action="store_true",
                     help="do not let the tiltrotator adapter chain occlude. Those links "
                          "are drawn as solid cylinders spanning the whole tool axis, "
@@ -243,8 +246,25 @@ def main(argv=None) -> int:
                 ("swing_joint", "boom_joint", "arm_joint", "bucket_joint"),
                 [math.radians(v) for v in vals]))))
 
-    tan_h = math.tan(math.radians(args.fov_h) / 2.0)
-    tan_v = math.tan(math.radians(args.fov_v) / 2.0)
+    import json
+    spath = args.sensors or (Path(__file__).resolve().parent.parent
+                             / "assets" / "ecr88" / "sensors.json")
+    try:
+        optics = {k: v for k, v in json.loads(
+            Path(spath).read_text(encoding="utf-8")).items() if not k.startswith("_")}
+    except OSError:
+        optics = {"default": {"hfov": 90.0}}
+        print(f"  (no sensors file at {spath}; 90 deg assumed for every camera)")
+
+    def hfov_of(nm):
+        if args.fov_h is not None:
+            return args.fov_h
+        return float(optics.get(nm, optics.get("default", {})).get(
+            "hfov", optics.get("default", {}).get("hfov", 90.0)))
+
+    # 4:3 sensor, so the vertical follows the horizontal rather than being set apart.
+    tan = {c: (math.tan(math.radians(hfov_of(c)) / 2.0),
+               math.tan(math.radians(hfov_of(c)) / 2.0) * 0.75) for c in cams}
     tnames = list(targets(poses[0][2]).keys())
     score = {c: {t: 0 for t in tnames} for c in cams}
     inwin = {c: {t: 0 for t in tnames} for c in cams}
@@ -266,7 +286,8 @@ def main(argv=None) -> int:
                 v = Rc.T @ (pt - eye)
                 if v[0] <= 1e-6:
                     continue                              # behind the sensor
-                if abs(v[1]) > tan_h * v[0] or abs(v[2]) > tan_v * v[0]:
+                th, tv = tan[c]
+                if abs(v[1]) > th * v[0] or abs(v[2]) > tv * v[0]:
                     continue                              # outside the FOV cone
                 blocked = False
                 for lk, lst in world.items():
@@ -289,7 +310,9 @@ def main(argv=None) -> int:
     print(f"  ECR88 sensor mount study   {n} poses over the pick-and-place cycle")
     mode = ("tool adapter IGNORED as an occluder"
             if args.ignore_tool_adapter else "every link occludes, adapter included")
-    print(f"  FOV {args.fov_h:g} x {args.fov_v:g} deg   {mode}")
+    fovs = ", ".join(f"{c.replace('cam_',''):s} {hfov_of(c):.0f}" for c in
+                     sorted(cams, key=lambda x: -hfov_of(x))[:3])
+    print(f"  FOV from sensors.json (widest: {fovs} deg)   {mode}")
     print("=" * 92)
     print(f"  구간(window) = 그 타깃을 실제로 봐야 하는 사이클 구간만 집계")
     for t in tnames:

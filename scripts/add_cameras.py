@@ -38,11 +38,30 @@ import sys
 from pathlib import Path
 
 
+def load_sensor_optics(explicit, repo_root):
+    """Per-camera optics, shared with camera_study.py. Missing file is not fatal."""
+    import json
+    path = explicit or (repo_root / "assets" / "ecr88" / "sensors.json")
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError:
+        print(f"[cam] no sensors file at {path}; using 90 deg for everything")
+        return {"default": {"hfov": 90.0}}
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"\n[FATAL] {path} is not valid json: {exc}\n")
+    return {k: v for k, v in raw.items() if not k.startswith("_")}
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage", type=Path, required=True, help="scene USD, edited in place")
-    ap.add_argument("--hfov", type=float, default=80.0, help="horizontal FOV, degrees")
+    ap.add_argument("--sensors", type=Path, default=None,
+                    help="per-camera optics json. Default: assets/ecr88/sensors.json "
+                         "next to the repo root. This is the SAME file camera_study.py "
+                         "reads, so the picture and the numbers cannot drift apart.")
+    ap.add_argument("--hfov", type=float, default=None,
+                    help="override every camera's horizontal FOV, degrees")
     ap.add_argument("--near", type=float, default=0.05)
     ap.add_argument("--far", type=float, default=200.0)
     args = ap.parse_args(argv)
@@ -75,7 +94,13 @@ def main(argv=None) -> int:
         return 2
 
     aperture = 20.955                       # USD default horizontal aperture, mm
-    focal = (aperture / 2.0) / math.tan(math.radians(args.hfov) / 2.0)
+    optics = load_sensor_optics(args.sensors, Path(__file__).resolve().parent.parent)
+
+    def hfov_for(name):
+        if args.hfov is not None:
+            return args.hfov
+        return float(optics.get(name, optics.get("default", {})).get(
+            "hfov", optics.get("default", {}).get("hfov", 90.0)))
 
     # ROWS, not columns. USD's Gf.Matrix4d is row-major and transforms ROW vectors
     # (v * M), so a change of basis puts the new axes in the rows. Writing them as
@@ -94,6 +119,8 @@ def main(argv=None) -> int:
 
     made = []
     for mp in mounts:
+        hfov = hfov_for(mp.GetName())
+        focal = (aperture / 2.0) / math.tan(math.radians(hfov) / 2.0)
         path = mp.GetPath().AppendChild("sensor")
         cam = UsdGeom.Camera.Define(stage, path)
         cam.CreateFocalLengthAttr(focal)
@@ -105,6 +132,8 @@ def main(argv=None) -> int:
         x.ClearXformOpOrder()
         x.AddTransformOp().Set(basis)
         made.append(path.pathString)
+        vf = 2 * math.degrees(math.atan((aperture * 0.75 / 2.0) / focal))
+        print(f"[cam] {mp.GetName():16s} {hfov:5.0f} x {vf:3.0f} deg   f={focal:5.2f} mm")
 
     # SELF-CHECK. The basis above was wrong once (transposed) and nothing complained:
     # a transposed rotation is still a rotation, so the cameras pointed at the
@@ -132,12 +161,7 @@ def main(argv=None) -> int:
 
     stage.GetRootLayer().Save()
     print(f"[cam] alignment verified: every camera's -Z is on its mount's +X")
-    vfov = 2 * math.degrees(math.atan((aperture * 0.75 / 2.0) / focal))
-    print(f"[cam] {args.stage}")
-    print(f"[cam] {len(made)} cameras, f={focal:.2f} mm on a {aperture:.3f} mm aperture "
-          f"= {args.hfov:g} x {vfov:.0f} deg")
-    for p in made:
-        print(f"[cam]   {p}")
+    print(f"[cam] {args.stage}  -  {len(made)} cameras")
     print("[cam] in the viewport: the camera dropdown at its top-left now lists these.")
     print("[cam] two at once: Window > Viewport > Viewport 2, then pick a camera in each.")
     app.close()
