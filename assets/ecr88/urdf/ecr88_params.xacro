@@ -1154,8 +1154,33 @@
   <!-- Dozer blade. The machine has one: the calibration procedure gates on
        "Dozer full down (Pitch angle > 5)". Cosmetic here, but it is the shape that
        most says "compact excavator" at a glance. Drawn on base_link, not articulated. -->
-  <xacro:property name="geo_blade_h"           value="0.42"/>    <!-- ASSUMPTION  m -->
-  <xacro:property name="geo_blade_t"           value="0.13"/>    <!-- ASSUMPTION  m -->
+  <xacro:property name="geo_blade_h"           value="0.42"/>    <!-- ASSUMPTION  m, blade plate height -->
+  <xacro:property name="geo_blade_t"           value="0.13"/>    <!-- ASSUMPTION  m, blade plate thickness -->
+  <xacro:property name="geo_blade_arm"         value="1.10"/>    <!-- CLASS-TYPICAL  m, pivot on the track frame to the cutting edge -->
+  <!-- Blade pivot, on the track frame just ahead of the front idler and near the track
+       bottom, which is where a compact excavator carries it. ASSUMPTION. -->
+  <xacro:property name="blade_pivot_x"         value="${lenBottomX * 0.5 - 0.10}"/>
+  <xacro:property name="blade_pivot_z"         value="${lenBottomZ1 + 0.22}"/>
+
+  <!-- BLADE RANGE. The firmware publishes JntAngDozerBlade and lists autoCtrlEnaDozer,
+       so this is a commanded axis, but neither the sheet nor the firmware carries its
+       limits. There IS a hard requirement to derive a floor from, though: the
+       calibration procedure will not start unless the blade can hold "Dozer full down,
+       Pitch angle > 5 deg", i.e. the blade alone has to jack the front of the machine
+       off the ground by 5 deg.
+         rear idler to cutting edge    = lenBottomX/2 + 0.10 + geo_blade_arm*cos(down)
+                                       ~ 2.62 m at the angle of interest
+         drop needed for 5 deg of pitch = 2.62 * tan(5 deg) = 0.229 m below the tracks
+         with geo_blade_arm = 1.10 m    = asin(0.229/1.10) = 12.0 deg below horizontal
+       So ANY range narrower than 12 deg down is provably wrong: it would fail a gate
+       the real machine passes. We take roughly double that, which also lands on the
+       class norm (blades in this size drop and lift about 0.4 m):
+         down 25 deg = 0.465 m below the tracks
+         up   30 deg = 0.550 m above
+       Tag CLASS-TYPICAL with a DERIVED floor. Replace from the working-range drawing
+       Teo has; that drawing carries the real numbers. -->
+  <xacro:property name="jntDozerLower"         value="${-pi/180*25}"/>
+  <xacro:property name="jntDozerUpper"         value="${ pi/180*30}"/>
 
   <!-- Crawler side profile. A track is a belt wrapped round an idler and a sprocket,
        so its silhouette is a rounded rectangle, not a slab. Rolling radius is half the

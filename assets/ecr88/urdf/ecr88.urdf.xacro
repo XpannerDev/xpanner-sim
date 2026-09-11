@@ -216,6 +216,9 @@
   <xacro:arg name="model_fork"          default="true"/>
   <!-- Candidate camera/lidar mount frames. Zero mass, no geometry beyond a marker. -->
   <xacro:arg name="model_sensor_mounts" default="true"/>
+  <!-- The five CAN1 IMU frames. On by default: they carry calibrated data, they are
+       massless markers, and the SIL loop needs them. -->
+  <xacro:arg name="model_imus"          default="true"/>
   <xacro:arg name="mesh_package"        default="xpanner_sim"/>
   <xacro:arg name="mesh_dir"            default="assets/ecr88/meshes"/>
   <xacro:arg name="mesh_visual_ext"     default="dae"/>
@@ -387,16 +390,53 @@
                   xyz="0 0 ${(lenBottomZ1 + lenUppZ1) * half}">
       <box size="${lenBottomX} ${lenBottomY - geo_track_w - geo_track_w} ${lenUppZ1 - lenBottomZ1}"/>
     </xacro:viscol>
-    <!-- SHAPE: dozer blade. The machine has one and the calibration procedure gates on
-         it ("Dozer full down, Pitch angle > 5"), so it is not decoration for the SIL
-         work either. Drawn on base_link and NOT articulated: there is no blade joint
-         in the parameter sheet, and inventing one would put a moving part in the tree
-         that nothing can command. Cosmetic mass is ignored - it sits inside m_base. -->
-    <xacro:detail material="xpanner_dark"
-                  xyz="${lenBottomX * half + geo_blade_t * half} 0 ${lenBottomZ1 + geo_blade_h * half}">
+  </link>
+
+  <!-- ======================================================================
+       DOZER BLADE - a real joint, corrected 2026-09-11.
+
+       This was drawn as fixed geometry on base_link, with the reasoning written
+       into the file: "there is no blade joint in the parameter sheet, and inventing
+       one would put a moving part in the tree that nothing can command." The premise
+       was checkable and it was wrong. The firmware commands it:
+         MACH_POST_01P  publishes  JntAngDozerBlade     (12 bit, 0.1 deg)
+         SYS_PARAM_01P  carries    autoCtrlEnaDozer     (one of 7 auto-control axes)
+         ECR88D_LongArm.m          bladeUp / bladeDown valve tables
+       and the calibration procedure gates on the blade holding the machine at
+       Pitch > 5 deg. Something can command it, and the SIL loop has to be able to.
+
+       The blade tables are the one pair in reqSpdToActCmd that are NOT speed
+       calibrated: X and Y are both [0, 0.001, 80], i.e. a passthrough. The blade is
+       commanded open loop, which is why vel_dozer stays a GUESS while every other
+       axis now carries the firmware's measured speed.
+
+       Mass comes OUT of m_base (m_blade), exactly as the tracks did, or the machine
+       silently gains 250 kg - the same mistake as H2.
+       ====================================================================== -->
+  <link name="dozer_link">
+    <xacro:inertial_box mass="${m_blade}"
+                        x="${geo_blade_t}" y="${lenBottomY}" z="${geo_blade_h}"
+                        xyz="${geo_blade_arm} 0 0"/>
+    <!-- Push arms, drawn from the pivot out to the blade so the joint is visible. -->
+    <xacro:viscol name="dozer_link" material="xpanner_dark"
+                  xyz="${geo_blade_arm * half} 0 0">
+      <box size="${geo_blade_arm} ${lenBottomY - geo_track_w} 0.10"/>
+    </xacro:viscol>
+    <xacro:detail material="xpanner_dark" xyz="${geo_blade_arm} 0 0">
       <box size="${geo_blade_t} ${lenBottomY} ${geo_blade_h}"/>
     </xacro:detail>
   </link>
+  <joint name="dozer_joint" type="revolute">
+    <parent link="base_link"/>
+    <child  link="dozer_link"/>
+    <origin xyz="${blade_pivot_x} 0 ${blade_pivot_z}" rpy="0 0 0"/>
+    <!-- +Y, so a POSITIVE angle lifts the blade. Matches the boom convention
+         (blade up and boom up are both positive about +Y). -->
+    <axis xyz="0 1 0"/>
+    <limit lower="${jntDozerLower}" upper="${jntDozerUpper}"
+           effort="${eff_dozer}" velocity="${vel_dozer}"/>
+    <dynamics damping="${dyn_damping}" friction="${dyn_friction}"/>
+  </joint>
 
   <!-- Tracks. FIXED for now (T12): travel is not simulated yet. To drive the machine,
        change these to `continuous` with <axis xyz="0 1 0"/> and add wheel/track links,
@@ -1247,6 +1287,94 @@
        EXCLUDED: a mimic joint must not carry a command interface, and conn_rod_joint
        is a cut joint with no actuator behind it.
        ===================================================================== -->
+  <!-- =====================================================================
+       IMU MOUNTS - the machine's own calibrated mounting rotations.
+
+       CAN1 carries six IMUs into Mango at 20 ms, each publishing QUAT + ACC + GYRO.
+       Five are populated on this machine; the sixth (Boom2) is an identity matrix
+       because lenBm2 = 0, i.e. there is no Boom2 to put one on.
+
+       The attitude scheme these implement: ONE IMU PER MEMBER, and every joint angle
+       the firmware reports is a DIFFERENCE of two of them.
+         imuChs   -> house      JntAngBodyRoll, JntAngBodyPitch  (absolute)
+         imuBm1   -> boom       JntAngBodyToBoom   = boom  - chassis
+         imuArm   -> arm        JntAngBoom2ToArm   = arm   - boom
+         imuLink  -> output     JntAngArmToBucket  = output- arm
+         imuTilt  -> tilt       JntAngTilt
+       That is why there is no encoder anywhere in this machine, and it is why these
+       frames have to be right: a wrong mounting rotation does not shift one reading,
+       it corrupts the joint angle the controller closes its loop on.
+
+       ROTATIONS ARE OEM-FIRMWARE, POSITIONS ARE A GUESS.
+       ECR88D_LongArm.m gives each IMU a 3x3 direction cosine matrix (a11..a33) and
+       NO translation. So the orientations below are the machine's own calibration,
+       converted to URDF fixed-axis XYZ and round-tripped back to the matrix to 7e-7;
+       the xyz are plausible spots on each member and nothing more. For attitude that
+       split is the right way round - the rotation is what sets what the gyro and the
+       accelerometer read. Position only enters through the lever-arm term under
+       angular acceleration, which is small here and zero in steady motion.
+
+       All six matrices are proper rotations (det = +1, orthonormal to 1e-7), and the
+       three arm-chain boards decompose cleanly as Rz(yaw) * Rx(90 deg) with residuals
+       under 0.5 deg: the same board on a vertical side plate, the yaw being that
+       plate's angle to the member. imuBm1's yaw is 32.4 deg, which is the facet angle
+       you would expect on a curved gooseneck boom; imuArm and imuLink are -6.0 and
+       -3.4 deg, i.e. plates nearly parallel to their members. imuChs is flat and
+       yawed 101 deg (a box in the cabinet); imuTilt is a full axis permutation.
+       That consistency is the reason we read the matrix as IMU -> link rather than
+       its transpose: under the transpose the calibrated angle would be a rotation
+       about the sensor rather than about the member, which is not a thing a bracket
+       has. IF THE SIM'S CAN1 OUTPUT EVER DISAGREES WITH A RECORDED LOG BY A
+       TRANSPOSE, THIS IS THE ASSUMPTION TO OVERTURN FIRST.
+
+       Each frame's axes are the SENSOR's axes, so a reading taken in this frame is
+       directly comparable to the real CAN1 payload.
+       ===================================================================== -->
+  <xacro:if value="$(arg model_imus)">
+    <xacro:macro name="imu_mount" params="name parent xyz rpy">
+      <link name="${name}">
+        <xacro:inertial_sphere mass="${m_marker}" radius="${geo_marker_r}"/>
+        <xacro:detail_visual material="xpanner_accent">
+          <box size="${geo_marker_r*2} ${geo_marker_r*2} ${geo_marker_r}"/>
+        </xacro:detail_visual>
+      </link>
+      <joint name="${name}_joint" type="fixed">
+        <parent link="${parent}"/>
+        <child  link="${name}"/>
+        <origin xyz="${xyz}" rpy="${rpy}"/>
+      </joint>
+    </xacro:macro>
+
+    <!-- imuChs. Flat, yawed 101.012 deg. Position: in the house, low and central. -->
+    <xacro:imu_mount name="imu_chs" parent="house_link"
+                     xyz="0.20 0.30 ${lenUppZ1 + 0.25}"
+                     rpy="0.007485990 -0.006288474 1.762991172"/>
+    <!-- imuBm1. Side plate at 32.447 deg. Position: outboard face near the boom foot. -->
+    <xacro:imu_mount name="imu_boom" parent="boom_link"
+                     xyz="0.70 ${-geo_boom_sec_w * half - 0.02} 0.20"
+                     rpy="1.571657101 -0.001138020 0.566315716"/>
+    <!-- imuArm. Side plate at -6.043 deg. -->
+    <xacro:imu_mount name="imu_arm" parent="arm_link"
+                     xyz="0.45 ${-geo_arm_sec_w * half - 0.02} 0.12"
+                     rpy="1.579022612 -0.002439665 -0.105463699"/>
+    <!-- imuLink. Side plate at -3.372 deg. The firmware calls the 4-bar OUTPUT member
+         "Link" in the parameter file and "Bucket" on the bus; it is the member the
+         tool hangs from (distOutpLinkToTiltMnt = 0), so its attitude IS the tool's. -->
+    <xacro:imu_mount name="imu_link" parent="output_link"
+                     xyz="0.15 -0.12 0.05"
+                     rpy="1.575926179 0.001593256 -0.058849482"/>
+    <!-- imuTilt. Full axis permutation: sensor +X along the member's -Z. Its pitch is
+         88.0 deg, i.e. near the gimbal-lock pole of the rpy parameterization, so these
+         three numbers are individually ill-conditioned even though the matrix they
+         rebuild is exact to 7e-7. Do not hand-tune them; regenerate from a11..a33. -->
+    <xacro:imu_mount name="imu_tilt" parent="tilt_link"
+                     xyz="0.05 0.0 -0.08"
+                     rpy="0.911970428 1.536501790 2.473026331"/>
+    <!-- imuBm2 is deliberately absent. Its matrix in the firmware is the identity and
+         lenBm2 = 0: the slot exists on the bus, the sensor does not exist on the
+         machine. Emitting a frame for it would invent hardware. -->
+  </xacro:if>
+
   <xacro:macro name="ecr88_ros2_control_joint" params="name">
     <joint name="${name}">
       <command_interface name="position"/>
@@ -1268,6 +1396,7 @@
       <xacro:ecr88_ros2_control_joint name="bucket_joint"/>
       <xacro:ecr88_ros2_control_joint name="tilt_joint"/>
       <xacro:ecr88_ros2_control_joint name="rotator_joint"/>
+      <xacro:ecr88_ros2_control_joint name="dozer_joint"/>
     </ros2_control>
   </xacro:if>
 

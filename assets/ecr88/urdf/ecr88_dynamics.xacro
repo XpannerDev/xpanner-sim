@@ -117,7 +117,8 @@
        document's 13 link table. -->
   <xacro:property name="m_contact_surface" value="180.0"/> <!-- CLASS-TYPICAL, NO SOURCE [L20]  suction plate assembly, the TCP link. -->
   <xacro:property name="m_track"       value="197.0"/>   <!-- DERIVED from PUBLISHED weight deltas [L21]  PER TRACK, rubber 450 mm. Volvo publishes the same machine with steel 450 (8 939 kg) and rubber 450 (8 752 kg): 187 kg for the pair, 93.5 kg per side. With a class typical steel chain of 290 kg/side (39 links at 154 mm pitch) the rubber track is 196.5 kg/side. -->
-  <xacro:property name="m_base_frame"  value="${m_base - 2*m_track}"/> <!-- DERIVED  = 2 319 kg. USE THIS for base_link when the two track links are emitted separately, so the tracks are not counted twice. See H2. -->
+  <xacro:property name="m_blade"       value="250.0"/>   <!-- CLASS-TYPICAL  kg, 2.32 m blade with its push arms and cylinder. Now that the blade is a real link it has to come OUT of m_base the same way the tracks did (H2), or the machine gains 250 kg. -->
+  <xacro:property name="m_base_frame"  value="${m_base - 2*m_track - m_blade}"/> <!-- DERIVED  = 2 319 kg. USE THIS for base_link when the two track links are emitted separately, so the tracks are not counted twice. See H2. -->
   <xacro:property name="m_marker"      value="0.01"/>    <!-- GUESS, TOKEN  coordinate frame markers (boom_mount, gnss x2, cyl anchors x3). Small enough to be dynamically irrelevant, large enough that no importer trips over it. -->
 
   <!-- Totals, COMPUTED so they cannot go stale. -->
@@ -459,6 +460,7 @@
   <xacro:property name="vel_inp_link" value="${vel_bucket}"/> <!-- ALIAS  the link axis above IS this joint. -->
   <xacro:property name="vel_conn_rod" value="${vel_bucket}"/> <!-- ALIAS  driven branch of the same 4 bar. -->
   <xacro:property name="vel_outp_link" value="${vel_bucket}"/> <!-- ALIAS  same joint as bucket_joint. -->
+  <xacro:property name="eff_dozer"    value="${cyl_relief_pa * pi / 4 * cyl_blade_bore * cyl_blade_bore * 0.55}"/> <!-- DERIVED  the blade cylinder pushes 390.2 kN and acts on roughly a 0.55 m moment arm about the blade pivot. Generous, and deliberately so: the blade's job in the calibration procedure is to jack the front of an 8.75 t machine off the ground, so an under-powered blade would silently fail the Pitch > 5 gate. -->
   <xacro:property name="vel_dozer"    value="0.5"/>       <!-- GUESS  the blade table is a passthrough (X = Y = [0, 0.001, 80]), i.e. the blade is NOT speed calibrated: it is commanded open loop. No firmware speed exists to take. -->
 
   <!-- ============================================================================
