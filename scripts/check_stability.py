@@ -47,7 +47,10 @@ w.reset()
 from isaacsim.core.prims import Articulation
 art=Articulation("/World/ECR88"); art.initialize()
 names=art.dof_names
-watch=[n for n in names if n.startswith("cyl_")]+["boom_joint","arm_joint","bucket_joint"]
+# Watch every articulated joint, not a list somebody has to remember to extend.
+# The hardcoded three silently skipped dozer_joint and boom_swing_joint the day
+# they were added, which is exactly when a new joint most needs watching.
+watch=[n for n in names]
 idx={n:names.index(n) for n in watch if n in names}
 hist={n:[] for n in idx}
 for i in range(400):
