@@ -151,6 +151,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import math
 import shutil
 import subprocess
 import sys
@@ -628,6 +629,130 @@ def _import_legacy(handles, urdf_path: Path, output: Path, args) -> tuple[Path, 
 
 
 # --------------------------------------------------------------------------- #
+# 4b.  REST POSE
+# --------------------------------------------------------------------------- #
+def apply_rest_pose(usd_file: Path, explicit: dict) -> None:
+    """
+    Write initial joint positions into the exported USD.
+
+    WHY THIS EXISTS
+    ---------------
+    A URDF's zero pose is not required to lie inside the joint limits, and on this
+    machine it does not: boom_joint is limited to [-65.73, -27.73] deg because the
+    38 deg OEM span is placed by the ground-contact anchor, and input_link_joint to
+    [-170, -20] because it is a 4-bar dressing member. Both start at 0, outside their
+    own limits. Opening the stage shows a posture the machine cannot hold, and the
+    instant someone presses Play the solver yanks those joints to the nearest stop.
+
+    Fixing it in the URDF would mean adding an offset to the joint origin, which
+    would break the one-to-one correspondence between our joint angles and the
+    angles Olivia measured on the real machine. So it is fixed HERE instead: the
+    geometry stays untouched and only the opening posture is chosen.
+
+    RULE
+    ----
+    A joint named in `explicit` gets that value. Every other joint gets 0 if 0 is
+    inside its limits, and the midpoint of its limits if it is not. The rule alone
+    guarantees no joint ever starts outside its own limits; `explicit` is only there
+    to make the opening posture a sensible one rather than a merely legal one.
+
+    MIMIC-SLAVED joints (the hydraulic cylinders) are computed from their driver via
+    newton:mimicCoef1 * q_driver + mimicCoef0, so the cylinders open already attached
+    instead of snapping into place on the first physics step.
+
+    Units follow USD: degrees for angular, stage linear units for prismatic.
+    """
+    from pxr import Sdf, Usd, UsdPhysics
+
+    stage = Usd.Stage.Open(str(usd_file))
+    if stage is None:
+        print(f"[rest] could not open {usd_file}; rest pose not applied")
+        return
+
+    joints = {}
+    for prim in stage.Traverse():
+        if prim.IsA(UsdPhysics.RevoluteJoint):
+            joints[prim.GetName()] = (prim, "angular")
+        elif prim.IsA(UsdPhysics.PrismaticJoint):
+            joints[prim.GetName()] = (prim, "linear")
+    if not joints:
+        print("[rest] no revolute/prismatic joints found; rest pose not applied")
+        return
+
+    def limits(prim):
+        lo = prim.GetAttribute("physics:lowerLimit")
+        hi = prim.GetAttribute("physics:upperLimit")
+        lo = lo.Get() if lo and lo.HasAuthoredValue() else None
+        hi = hi.Get() if hi and hi.HasAuthoredValue() else None
+        return lo, hi
+
+    # Pass 1: every non-mimic joint.
+    values, deferred = {}, []
+    for name, (prim, axis) in joints.items():
+        rel = prim.GetRelationship("newton:mimicJoint")
+        if rel and rel.GetTargets():
+            deferred.append(name)
+            continue
+        lo, hi = limits(prim)
+        if name in explicit:
+            v = float(explicit[name])
+            if lo is not None and hi is not None and not (lo - 1e-9 <= v <= hi + 1e-9):
+                print(f"[rest] {name}: requested {v:.2f} is outside [{lo:.2f}, {hi:.2f}] -> clamped")
+                v = min(max(v, lo), hi)
+            values[name] = v
+            continue
+        if lo is None or hi is None:
+            values[name] = 0.0
+        elif lo - 1e-9 <= 0.0 <= hi + 1e-9:
+            values[name] = 0.0
+        else:
+            values[name] = (lo + hi) / 2.0
+            print(f"[rest] {name}: 0 is outside [{lo:.2f}, {hi:.2f}] -> {values[name]:.2f}")
+
+    # Pass 2: mimic-slaved joints follow their driver.
+    for name in deferred:
+        prim, axis = joints[name]
+        driver = prim.GetRelationship("newton:mimicJoint").GetTargets()[0].name
+        c1 = prim.GetAttribute("newton:mimicCoef1")
+        c0 = prim.GetAttribute("newton:mimicCoef0")
+        mult = c1.Get() if c1 and c1.HasAuthoredValue() else 1.0
+        off = c0.Get() if c0 and c0.HasAuthoredValue() else 0.0
+        q = values.get(driver, 0.0)
+        # mimicCoef* are in the URDF's units: radians in, radians or metres out.
+        # The driver value here is in USD units (degrees for angular), so convert.
+        drv_axis = joints.get(driver, (None, "angular"))[1]
+        q_si = math.radians(q) if drv_axis == "angular" else q
+        v_si = mult * q_si + off
+        v = math.degrees(v_si) if axis == "angular" else v_si
+        # A mimic target can land outside the SLAVED joint's own limits -- the 4-bar
+        # dressing branch does exactly that, because its identity-mimic placeholder
+        # maps bucket_joint [-126, 43] onto input_link_joint [-170, -20]. Opening the
+        # stage with a joint outside its stops is the very thing this function exists
+        # to prevent, so clamp and say so rather than trading one illegal pose for
+        # another.
+        lo, hi = limits(prim)
+        if lo is not None and hi is not None and not (lo - 1e-9 <= v <= hi + 1e-9):
+            print(f"[rest] {name}: mimic of {driver} gives {v:.2f}, outside "
+                  f"[{lo:.2f}, {hi:.2f}] -> clamped. The mimic coefficients and this "
+                  f"joint's limits disagree; that is a real modelling gap, not a rounding.")
+            v = min(max(v, lo), hi)
+        values[name] = v
+
+    applied = 0
+    for name, v in values.items():
+        prim, axis = joints[name]
+        prim.CreateAttribute(f"state:{axis}:physics:position",
+                             Sdf.ValueTypeNames.Float).Set(float(v))
+        if prim.GetAttribute(f"drive:{axis}:physics:stiffness"):
+            prim.CreateAttribute(f"drive:{axis}:physics:targetPosition",
+                                 Sdf.ValueTypeNames.Float).Set(float(v))
+        applied += 1
+    stage.GetRootLayer().Save()
+    named = ", ".join(f"{k}={values[k]:.1f}" for k in sorted(explicit) if k in values)
+    print(f"[rest] applied to {applied} joints" + (f"  ({named})" if named else ""))
+
+
+# --------------------------------------------------------------------------- #
 # 5.  Post-import report
 # --------------------------------------------------------------------------- #
 def report_articulation(usd_file: Path) -> None:
@@ -714,6 +839,16 @@ def parse_args(argv=None):
     p.add_argument("--no-merge-fixed-joints", dest="merge_fixed_joints",
                    action="store_false", help=argparse.SUPPRESS)
 
+    p.add_argument("--rest-pose", metavar="J=VAL", action="append", default=[],
+                   help="opening joint value, degrees for revolute / metres for prismatic, "
+                        "e.g. --rest-pose boom_joint=-30 --rest-pose arm_joint=110. "
+                        "Any joint not named still gets 0 when 0 is inside its limits and "
+                        "the limit midpoint when it is not, so nothing ever opens outside "
+                        "its own stops. Mimic-slaved joints follow their driver.")
+    p.add_argument("--no-rest-pose", dest="rest_pose_enabled", action="store_false",
+                   help="leave every joint at 0, even joints whose limits exclude 0 "
+                        "(they will snap to the nearest stop on the first physics step)")
+    p.set_defaults(rest_pose_enabled=True)
     p.add_argument("--joint-drive-type", choices=("none", "position", "velocity"),
                    default="position",
                    help="what the joint drives track. Isaac Sim 6.0 field: "
@@ -855,6 +990,16 @@ def main(argv=None) -> int:
             _import_legacy(handles, urdf_path, output, args)
 
         simulation_app.update()
+
+        if args.rest_pose_enabled:
+            explicit = {}
+            for item in args.rest_pose:
+                if "=" not in item:
+                    raise SystemExit(f"--rest-pose expects J=VAL, got {item!r}")
+                k, v = item.split("=", 1)
+                explicit[k.strip()] = float(v)
+            apply_rest_pose(output, explicit)
+
         report_articulation(output)
 
     except XacroError as exc:
