@@ -1118,6 +1118,23 @@
   <xacro:property name="geo_blade_h"           value="0.42"/>    <!-- ASSUMPTION  m -->
   <xacro:property name="geo_blade_t"           value="0.13"/>    <!-- ASSUMPTION  m -->
 
+  <!-- Crawler side profile. A track is a belt wrapped round an idler and a sprocket,
+       so its silhouette is a rounded rectangle, not a slab. Rolling radius is half the
+       track height (lenUppZ1 - lenBottomZ1, the measured car-body clearance), and the
+       two wheels sit one radius in from each end so the belt envelope still spans
+       exactly lenBottomX. Derived from measured numbers, so the track can never
+       outgrow the surveyed undercarriage; only the roundness is cosmetic. -->
+  <xacro:property name="geo_track_h"           value="${lenUppZ1 - lenBottomZ1}"/>   <!-- DERIVED -->
+  <xacro:property name="geo_track_r"           value="${geo_track_h * half}"/>       <!-- DERIVED -->
+  <xacro:property name="geo_track_wheel_dx"    value="${lenBottomX * half - geo_track_r}"/> <!-- DERIVED -->
+  <!-- Cab glasshouse: the upper box is inset so the cab reads as a cab rather than a
+       second counterweight. Cosmetic. -->
+  <xacro:property name="geo_cab_upper_inset"   value="0.14"/>    <!-- ASSUMPTION  m -->
+  <!-- Boom taper: the tip section is narrower than the foot section on every excavator
+       boom. Fraction of geo_boom_sec_*. Cosmetic. -->
+  <xacro:property name="geo_boom_taper"        value="0.72"/>    <!-- ASSUMPTION -->
+  <xacro:property name="geo_arm_taper"         value="0.68"/>    <!-- ASSUMPTION -->
+
   <!-- ..................................................................
        [15][E] Joint limits / actuation.  ALL ALIASES onto section [13].
        No number is authored here — section [13] holds every value together

@@ -370,10 +370,23 @@
     <xacro:inertial_box mass="${m_track}"
                         x="${lenBottomX}" y="${geo_track_w}" z="${lenUppZ1 - lenBottomZ1}"
                         xyz="0 0 ${(lenBottomZ1 + lenUppZ1) * half}"/>
+    <!-- SHAPE: belt over idler + sprocket, not a slab. The straight run carries the
+         collision; the two end wheels are what make the silhouette read as a crawler.
+         Envelope still spans exactly lenBottomX - see geo_track_wheel_dx. -->
     <xacro:viscol name="track_left_link" material="xpanner_dark"
                   xyz="0 0 ${(lenBottomZ1 + lenUppZ1) * half}">
-      <box size="${lenBottomX} ${geo_track_w} ${lenUppZ1 - lenBottomZ1}"/>
+      <box size="${lenBottomX - geo_track_r - geo_track_r} ${geo_track_w} ${geo_track_h}"/>
     </xacro:viscol>
+    <xacro:detail material="xpanner_dark"
+                  xyz="${geo_track_wheel_dx} 0 ${(lenBottomZ1 + lenUppZ1) * half}"
+                  rpy="${half_pi} 0 0">
+      <cylinder radius="${geo_track_r}" length="${geo_track_w}"/>
+    </xacro:detail>
+    <xacro:detail material="xpanner_dark"
+                  xyz="${-geo_track_wheel_dx} 0 ${(lenBottomZ1 + lenUppZ1) * half}"
+                  rpy="${half_pi} 0 0">
+      <cylinder radius="${geo_track_r}" length="${geo_track_w}"/>
+    </xacro:detail>
   </link>
   <joint name="track_left_joint" type="fixed">
     <parent link="base_link"/>
@@ -385,10 +398,21 @@
     <xacro:inertial_box mass="${m_track}"
                         x="${lenBottomX}" y="${geo_track_w}" z="${lenUppZ1 - lenBottomZ1}"
                         xyz="0 0 ${(lenBottomZ1 + lenUppZ1) * half}"/>
+    <!-- SHAPE: mirror of track_left_link. See the note there. -->
     <xacro:viscol name="track_right_link" material="xpanner_dark"
                   xyz="0 0 ${(lenBottomZ1 + lenUppZ1) * half}">
-      <box size="${lenBottomX} ${geo_track_w} ${lenUppZ1 - lenBottomZ1}"/>
+      <box size="${lenBottomX - geo_track_r - geo_track_r} ${geo_track_w} ${geo_track_h}"/>
     </xacro:viscol>
+    <xacro:detail material="xpanner_dark"
+                  xyz="${geo_track_wheel_dx} 0 ${(lenBottomZ1 + lenUppZ1) * half}"
+                  rpy="${half_pi} 0 0">
+      <cylinder radius="${geo_track_r}" length="${geo_track_w}"/>
+    </xacro:detail>
+    <xacro:detail material="xpanner_dark"
+                  xyz="${-geo_track_wheel_dx} 0 ${(lenBottomZ1 + lenUppZ1) * half}"
+                  rpy="${half_pi} 0 0">
+      <cylinder radius="${geo_track_r}" length="${geo_track_w}"/>
+    </xacro:detail>
   </link>
   <joint name="track_right_joint" type="fixed">
     <parent link="base_link"/>
@@ -432,9 +456,25 @@
                   xyz="${-(lenUppX * half) + geo_cw_x * half} 0 ${lenUppZ1 + geo_cw_h * half}">
       <box size="${geo_cw_x} ${lenUppY * 0.94} ${geo_cw_h}"/>
     </xacro:detail>
+    <!-- SHORT TAIL SWING. The ECR88 is a reduced-tail-swing machine: its house rear is
+         a circular ARC about the swing axis, which is the whole point of the model and
+         the most recognisable thing about its silhouette from above. Radius is half the
+         measured house length, so the arc reaches exactly the same rear extent as the
+         deck box and never grows the envelope. -->
+    <xacro:detail material="xpanner_dark"
+                  xyz="0 0 ${lenUppZ1 + geo_cw_h * half}">
+      <cylinder radius="${lenUppX * half}" length="${geo_cw_h}"/>
+    </xacro:detail>
+    <!-- Cab: lower body + inset glasshouse, so it reads as a cab and not a second
+         counterweight. This is the piece milestone 1 is judged against - camera and
+         lidar candidates get argued about relative to what the operator can see. -->
     <xacro:detail material="xpanner_yellow"
-                  xyz="${(lenUppX * half) - geo_cab_x * half} ${(lenUppY * half) - geo_cab_y * half} ${lenUppZ1 + geo_deck_h + geo_cab_h * half}">
-      <box size="${geo_cab_x} ${geo_cab_y} ${geo_cab_h}"/>
+                  xyz="${(lenUppX * half) - geo_cab_x * half} ${(lenUppY * half) - geo_cab_y * half} ${lenUppZ1 + geo_deck_h + geo_cab_h * 0.30}">
+      <box size="${geo_cab_x} ${geo_cab_y} ${geo_cab_h * 0.60}"/>
+    </xacro:detail>
+    <xacro:detail material="xpanner_frame"
+                  xyz="${(lenUppX * half) - geo_cab_x * half} ${(lenUppY * half) - geo_cab_y * half} ${lenUppZ1 + geo_deck_h + geo_cab_h * 0.80}">
+      <box size="${geo_cab_x - geo_cab_upper_inset} ${geo_cab_y - geo_cab_upper_inset} ${geo_cab_h * 0.40}"/>
     </xacro:detail>
   </link>
   <joint name="swing_joint" type="revolute">
@@ -551,7 +591,7 @@
     <xacro:detail material="xpanner_yellow"
                   xyz="${bm_apex_x + bm_tip_dx * half} 0 ${geo_boom_rise * half}"
                   rpy="0 ${atan2(geo_boom_rise, bm_tip_dx)} 0">
-      <box size="${sqrt(bm_tip_dx * bm_tip_dx + geo_boom_rise * geo_boom_rise)} ${geo_boom_sec_w} ${geo_boom_sec_h}"/>
+      <box size="${sqrt(bm_tip_dx * bm_tip_dx + geo_boom_rise * geo_boom_rise)} ${geo_boom_sec_w * geo_boom_taper} ${geo_boom_sec_h * geo_boom_taper}"/>
     </xacro:detail>
   </link>
   <joint name="boom_joint" type="revolute">
@@ -609,9 +649,14 @@
          the published 2684 is the physical part envelope and is a different
          quantity, see the note in ecr88_params.xacro [15][D2]. -->
     <xacro:viscol name="arm_link" material="xpanner_yellow"
-                  xyz="${lenArm * half} 0 0">
-      <box size="${lenArm} ${geo_arm_sec_w} ${geo_arm_sec_h}"/>
+                  xyz="${lenArm * 0.25} 0 0">
+      <box size="${lenArm * half} ${geo_arm_sec_w} ${geo_arm_sec_h}"/>
     </xacro:viscol>
+    <!-- Tapered tip half. Every dipper narrows toward the bucket pin. Cosmetic. -->
+    <xacro:detail material="xpanner_yellow"
+                  xyz="${lenArm * 0.75} 0 0">
+      <box size="${lenArm * half} ${geo_arm_sec_w * geo_arm_taper} ${geo_arm_sec_h * geo_arm_taper}"/>
+    </xacro:detail>
   </link>
   <joint name="arm_joint" type="revolute">
     <parent link="boom_link"/>
