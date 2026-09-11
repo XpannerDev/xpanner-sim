@@ -1066,6 +1066,59 @@
   <xacro:property name="geo_marker_r"          value="0.03"/>    <!-- ESTIMATE (T11) m, cosmetic -->
 
   <!-- ..................................................................
+       [15][D2] SHAPE, not size.  Added 2026-09-11 after the first Isaac Sim
+       view: the kinematics were right but the machine did not read as an
+       excavator, because every member was a straight rod and the whole upper
+       structure was one featureless 2 m cube.
+
+       None of this changes a joint origin, a link length, a mass or an inertia.
+       It only changes what the placeholder primitives LOOK like, and it is worth
+       doing because the entire point of milestone 1 is letting people judge
+       sensor placement by eye. A cube tells them nothing about where a camera
+       would actually see from.
+
+       The section dimensions below are PUBLISHED: Volvo "Boom and dipper arm"
+       dimension table (the sheet Teo shared 2026-09-11).
+           Mono boom 3.55 m : length 3700, height 1244, width  335 mm
+           Dipper 1.7 m     : length 2283, height  518, width  305 mm
+           Dipper 2.1 m     : length 2684, height  562, width  305 mm
+       Note LENGTH here is the physical part envelope (3700), which is longer than
+       lenBm1 = 3550, the PIN-TO-PIN distance the kinematics use. They are different
+       quantities and both are correct; do not "fix" one against the other.
+       .................................................................. -->
+  <xacro:property name="geo_boom_sec_h"        value="0.335"/>   <!-- PUBLISHED  boom section width 335 mm, used as the beam depth -->
+  <xacro:property name="geo_boom_sec_w"        value="0.335"/>   <!-- PUBLISHED  boom width 335 mm -->
+  <!-- The published 1244 mm boom envelope height is what the BEND costs: a straight
+       3.55 m member would envelope at roughly its own section depth. So the rise of
+       the arc above the pin-to-pin chord is the envelope height minus the section:
+       1.244 - 0.335 = 0.909 m. ASSUMPTION: apex at 45% of the chord, which is where
+       it sits on the Volvo side-view drawing. Both numbers are cosmetic. -->
+  <xacro:property name="geo_boom_h_env"        value="1.244"/>   <!-- PUBLISHED  boom envelope height 1244 mm -->
+  <xacro:property name="geo_boom_rise"         value="${geo_boom_h_env - geo_boom_sec_h}"/>
+  <xacro:property name="geo_boom_apex_frac"    value="0.45"/>    <!-- ASSUMPTION  cosmetic -->
+  <!-- Dipper section, per variant. -->
+  <xacro:property name="geo_arm_sec_h"         value="${0.562 if lenArm &gt; 1.9 else 0.518}"/> <!-- PUBLISHED -->
+  <xacro:property name="geo_arm_sec_w"         value="0.305"/>   <!-- PUBLISHED  both dipper lengths are 305 mm wide -->
+  <!-- Upper structure broken into the three masses a person actually recognises.
+       Heights split geo_house_h; footprint split lenUppX / lenUppY. All ASSUMPTION,
+       all cosmetic, none of it feeds inertia (m_house keeps its single box). -->
+  <xacro:property name="geo_deck_h"            value="${geo_house_h * 0.46}"/>  <!-- ASSUMPTION  engine deck height -->
+  <xacro:property name="geo_cab_x"             value="1.00"/>    <!-- ASSUMPTION  cab footprint, m -->
+  <xacro:property name="geo_cab_y"             value="0.92"/>    <!-- ASSUMPTION -->
+  <!-- Cab height is the REMAINDER of geo_house_h above the deck, not an independent
+       guess. That keeps the three solids inside the same overall envelope the single
+       box used, so the machine does not silently grow taller than the T6 derivation
+       says it is: deck + cab = geo_house_h exactly. -->
+  <xacro:property name="geo_cab_h"             value="${geo_house_h - geo_deck_h}"/>  <!-- DERIVED from geo_house_h -->
+  <xacro:property name="geo_cw_x"              value="0.62"/>    <!-- ASSUMPTION  counterweight depth, m -->
+  <xacro:property name="geo_cw_h"              value="${geo_house_h * 0.62}"/>  <!-- ASSUMPTION -->
+  <!-- Dozer blade. The machine has one: the calibration procedure gates on
+       "Dozer full down (Pitch angle > 5)". Cosmetic here, but it is the shape that
+       most says "compact excavator" at a glance. Drawn on base_link, not articulated. -->
+  <xacro:property name="geo_blade_h"           value="0.42"/>    <!-- ASSUMPTION  m -->
+  <xacro:property name="geo_blade_t"           value="0.13"/>    <!-- ASSUMPTION  m -->
+
+  <!-- ..................................................................
        [15][E] Joint limits / actuation.  ALL ALIASES onto section [13].
        No number is authored here — section [13] holds every value together
        with its T1/T2/T3 assumption, including the jntBkt* and jntConnRod*

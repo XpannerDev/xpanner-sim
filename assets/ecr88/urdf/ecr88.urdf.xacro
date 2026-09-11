@@ -287,6 +287,27 @@
     </collision>
   </xacro:macro>
 
+  <!-- An EXTRA placeholder solid on a link that already has a viscol. Same visual +
+       collision pair, but it vanishes entirely once real meshes are switched on,
+       because a mesh already carries the whole shape. Use it to break one link into
+       the few solids that make it recognisable (deck / cab / counterweight, or the
+       two halves of a bent boom) instead of one featureless box.
+       Shape only: it never touches a joint origin, a length, a mass or an inertia. -->
+  <xacro:macro name="detail"
+               params="material:='xpanner_yellow' xyz:='0 0 0' rpy:='0 0 0' *prim">
+    <xacro:unless value="$(arg use_meshes)">
+      <visual>
+        <origin xyz="${xyz}" rpy="${rpy}"/>
+        <geometry><xacro:insert_block name="prim"/></geometry>
+        <material name="${material}"/>
+      </visual>
+      <collision>
+        <origin xyz="${xyz}" rpy="${rpy}"/>
+        <geometry><xacro:insert_block name="prim"/></geometry>
+      </collision>
+    </xacro:unless>
+  </xacro:macro>
+
   <!-- A structural member drawn as a capsule-ish cylinder running from the link origin
        to the offset (dx,dy,dz). Length and pitch are DERIVED from the offset, so the
        visual can never disagree with the kinematics. Y-planar members only (dy ignored
@@ -331,6 +352,15 @@
                   xyz="0 0 ${(lenBottomZ1 + lenUppZ1) * half}">
       <box size="${lenBottomX} ${lenBottomY - geo_track_w - geo_track_w} ${lenUppZ1 - lenBottomZ1}"/>
     </xacro:viscol>
+    <!-- SHAPE: dozer blade. The machine has one and the calibration procedure gates on
+         it ("Dozer full down, Pitch angle > 5"), so it is not decoration for the SIL
+         work either. Drawn on base_link and NOT articulated: there is no blade joint
+         in the parameter sheet, and inventing one would put a moving part in the tree
+         that nothing can command. Cosmetic mass is ignored - it sits inside m_base. -->
+    <xacro:detail material="xpanner_dark"
+                  xyz="${lenBottomX * half + geo_blade_t * half} 0 ${lenBottomZ1 + geo_blade_h * half}">
+      <box size="${geo_blade_t} ${lenBottomY} ${geo_blade_h}"/>
+    </xacro:detail>
   </link>
 
   <!-- Tracks. FIXED for now (T12): travel is not simulated yet. To drive the machine,
@@ -376,10 +406,36 @@
     <xacro:inertial_box mass="${m_house}"
                         x="${lenUppX}" y="${lenUppY}" z="${geo_house_h}"
                         xyz="0 0 ${lenUppZ1 + geo_house_h * half}"/>
+    <!-- SHAPE: the upper structure used to be ONE box, lenUppX x lenUppY x geo_house_h,
+         i.e. a 2.28 x 2.46 x 2.03 m cube that swallowed the boom foot and told a viewer
+         nothing. It is now the three solids a person recognises. Same footprint, same
+         overall height, same m_house and same inertia box: only the picture changed.
+           deck  - engine/pump deck, full footprint, low
+           cw    - counterweight, at the rear (-X), the ECR88 tail swing mass
+           cab   - operator cab, front, offset to +Y so the boom runs up its -Y side,
+                   which is where the boom foot actually is (distChsToBmMnt_y = -0.15)
+         The cab is the piece that matters for milestone 1: camera and lidar candidates
+         get judged against where the operator can and cannot see. -->
     <xacro:viscol name="house_link" material="xpanner_yellow"
-                  xyz="0 0 ${lenUppZ1 + geo_house_h * half}">
-      <box size="${lenUppX} ${lenUppY} ${geo_house_h}"/>
+                  xyz="0 0 ${lenUppZ1 + geo_deck_h * half}">
+      <box size="${lenUppX} ${lenUppY} ${geo_deck_h}"/>
     </xacro:viscol>
+    <!-- Placed on the SAME convention as the deck box above: centred on the swing axis
+         in X and Y, sizes only (T6). Do not reach for lenUppX1 / lenUppY1 here - those
+         are the sheet's corner origins, which T6 concludes are in the Leica instrument
+         frame, and mixing them with the centred deck puts the counterweight in the
+         middle of the machine and the cab out past its nose.
+         Counterweight at the rear (-X), cab at the front (+X) and offset to +Y so the
+         boom runs up its -Y side, which is the side the boom foot is actually on
+         (distChsToBmMnt_y = -0.15). -->
+    <xacro:detail material="xpanner_dark"
+                  xyz="${-(lenUppX * half) + geo_cw_x * half} 0 ${lenUppZ1 + geo_cw_h * half}">
+      <box size="${geo_cw_x} ${lenUppY * 0.94} ${geo_cw_h}"/>
+    </xacro:detail>
+    <xacro:detail material="xpanner_yellow"
+                  xyz="${(lenUppX * half) - geo_cab_x * half} ${(lenUppY * half) - geo_cab_y * half} ${lenUppZ1 + geo_deck_h + geo_cab_h * half}">
+      <box size="${geo_cab_x} ${geo_cab_y} ${geo_cab_h}"/>
+    </xacro:detail>
   </link>
   <joint name="swing_joint" type="revolute">
     <parent link="base_link"/>
@@ -469,10 +525,34 @@
     <xacro:inertial_cylinder mass="${m_boom}" radius="${geo_boom_r}"
                              length="${lenBm1 + lenBm2}"
                              xyz="${(lenBm1 + lenBm2) * half} 0 0" rpy="0 ${half_pi} 0"/>
+    <!-- SHAPE: a real excavator boom is BENT, and the bend is the single strongest
+         visual cue that this is an excavator rather than a robot arm. Volvo publishes
+         the mono boom as 3700 long x 1244 high x 335 wide; a straight 3.55 m member
+         would envelope at about its own section depth, so the 1244 is the arc. The
+         rise above the pin-to-pin chord is therefore 1.244 - 0.335 = 0.909 m
+         (geo_boom_rise), apexed at 45% of the chord.
+
+         Drawn as two straight box segments, foot -> apex -> tip. The ENDPOINTS are
+         the real pins: segment A starts at the boom foot (0,0,0) and segment B ends
+         at the arm pin (lenBm1, 0, 0), which is exactly where arm_joint is. So the
+         bend is cosmetic and the kinematics are untouched: no matter what
+         geo_boom_rise is set to, both pins stay put.
+         Pitch of a box drawn along +X and rotated by p about +Y sends +X to
+         (cos p, 0, -sin p), hence the minus sign in the atan2 arguments. -->
+    <xacro:property name="bm_apex_x" value="${(lenBm1 + lenBm2) * geo_boom_apex_frac}"/>
+    <xacro:property name="bm_tip_dx" value="${(lenBm1 + lenBm2) - bm_apex_x}"/>
+    <!-- foot -> apex -->
     <xacro:viscol name="boom_link" material="xpanner_yellow"
-                  xyz="${(lenBm1 + lenBm2) * half} 0 0" rpy="0 ${half_pi} 0">
-      <cylinder radius="${geo_boom_r}" length="${lenBm1 + lenBm2}"/>
+                  xyz="${bm_apex_x * half} 0 ${geo_boom_rise * half}"
+                  rpy="0 ${-atan2(geo_boom_rise, bm_apex_x)} 0">
+      <box size="${sqrt(bm_apex_x * bm_apex_x + geo_boom_rise * geo_boom_rise)} ${geo_boom_sec_w} ${geo_boom_sec_h}"/>
     </xacro:viscol>
+    <!-- apex -> arm pin -->
+    <xacro:detail material="xpanner_yellow"
+                  xyz="${bm_apex_x + bm_tip_dx * half} 0 ${geo_boom_rise * half}"
+                  rpy="0 ${atan2(geo_boom_rise, bm_tip_dx)} 0">
+      <box size="${sqrt(bm_tip_dx * bm_tip_dx + geo_boom_rise * geo_boom_rise)} ${geo_boom_sec_w} ${geo_boom_sec_h}"/>
+    </xacro:detail>
   </link>
   <joint name="boom_joint" type="revolute">
     <parent link="boom_mount_link"/>
@@ -523,9 +603,14 @@
   <link name="arm_link">
     <xacro:inertial_cylinder mass="${m_arm}" radius="${geo_arm_r}" length="${lenArm}"
                              xyz="${lenArm * half} 0 0" rpy="0 ${half_pi} 0"/>
+    <!-- SHAPE: the dipper is a fabricated box beam, not a rod. Volvo publishes the
+         2.1 m dipper as 2684 x 562 x 305 mm (1.7 m: 2283 x 518 x 305), so use the
+         published section instead of geo_arm_r. Length stays lenArm (pin to pin);
+         the published 2684 is the physical part envelope and is a different
+         quantity, see the note in ecr88_params.xacro [15][D2]. -->
     <xacro:viscol name="arm_link" material="xpanner_yellow"
-                  xyz="${lenArm * half} 0 0" rpy="0 ${half_pi} 0">
-      <cylinder radius="${geo_arm_r}" length="${lenArm}"/>
+                  xyz="${lenArm * half} 0 0">
+      <box size="${lenArm} ${geo_arm_sec_w} ${geo_arm_sec_h}"/>
     </xacro:viscol>
   </link>
   <joint name="arm_joint" type="revolute">
