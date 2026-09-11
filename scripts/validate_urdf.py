@@ -83,9 +83,60 @@ MATCH_TOL = 5e-4        # 0.5 mm -- ground-truth offset matching
 
 
 # --------------------------------------------------------------------------- #
-# ground truth  (resources/ECR88_kinematic_parameters.md, sheet KinematicPara_new,
-# column "ECR88 기장").  Rows marked Delete are intentionally absent.
+# ground truth  (resources/ECR88_kinematic_parameters.md, sheet KinematicPara_new).
+# Rows marked Delete are intentionally absent.
+#
+# The sheet has one column PER MACHINE VARIANT and the xacro picks one with
+# `machine_variant`.  Checking a 2.1 m build against the 기장 column made the
+# validator warn about lenArm and distArmToInpLink on a perfectly correct asset --
+# false warnings are worse than none, because they train people to skip the block.
+# So: the base table is the 기장 column, and VARIANT_OVERRIDES carries the rows that
+# actually differ.  `--variant` selects one; it defaults to what the xacro is set to,
+# read out of ecr88_params.xacro, so the default run is always self-consistent.
 # --------------------------------------------------------------------------- #
+VARIANT_OVERRIDES = {
+    # KinematicPara_new col "ECR88 2.1m 미국#1" and "... 신규흡착기".
+    # Only rows whose value actually moves are listed.
+    "ECR88_US1_2P1M": {
+        "offsets": {"distArmToInpLink": (1.841, 0.0, 0.0185)},
+        "lengths": {"lenArm": 2.1},
+    },
+    "ECR88_US1_2P1M_NEWSUCTION": {
+        "offsets": {"distArmToInpLink": (1.841, 0.0, 0.0185),
+                    "distAttToProbe": (0.255, 0.0, -0.57),
+                    "distProbeToContactSurface": (0.1, 0.0, -0.262)},
+        "lengths": {"lenArm": 2.1},
+        "sum_check": (0.355, 0.0, -0.832),
+    },
+    "ECR88_KIJANG": {"offsets": {}, "lengths": {}},
+}
+
+
+def read_variant_from_params(urdf_dir):
+    """Return the machine_variant the xacro is actually set to, or None."""
+    import re as _re
+    p = urdf_dir / "ecr88_params.xacro"
+    try:
+        m = _re.search(r'<xacro:property\s+name="machine_variant"\s+value="([^"]+)"',
+                       p.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+    return m.group(1) if m else None
+
+
+def apply_variant(name):
+    """Fold the variant's overrides into the module-level ground-truth tables."""
+    ov = VARIANT_OVERRIDES.get(name)
+    if ov is None:
+        return False
+    GT_OFFSETS.update(ov.get("offsets", {}))
+    GT_LENGTHS.update(ov.get("lengths", {}))
+    if "sum_check" in ov:
+        global GT_SUM_CHECK
+        GT_SUM_CHECK = (GT_SUM_CHECK[0], ov["sum_check"], GT_SUM_CHECK[2])
+    return True
+
+
 GT_OFFSETS = {
     "distAntMainToAntAux":      (0.682, 0.959, 0.0),
     "distAntMainToChs":         (0.57, -0.087, -1.416),
@@ -1379,12 +1430,28 @@ def main(argv=None) -> int:
                     help="write the expanded URDF here")
     ap.add_argument("--warn-as-error", action="store_true",
                     help="exit non-zero on warnings too (use in CI once the TODOs close)")
+    ap.add_argument("--variant", default=None, choices=sorted(VARIANT_OVERRIDES),
+                    help="parameter-sheet column to check against. Default: whatever "
+                         "machine_variant ecr88_params.xacro is set to.")
     args = ap.parse_args(argv)
+
+    # ---- ground-truth variant --------------------------------------------- #
+    # Must happen before any GTRUTH check reads GT_OFFSETS / GT_LENGTHS.
+    src_path = args.urdf if args.urdf is not None else args.xacro
+    variant = args.variant or read_variant_from_params(src_path.resolve().parent)
+    variant_src = "--variant" if args.variant else "ecr88_params.xacro"
+    if variant is None:
+        variant, variant_src = "ECR88_KIJANG", "fallback (machine_variant not readable)"
+    if not apply_variant(variant):
+        print(f"[SKIP] unknown machine_variant {variant!r}; ground truth left at 기장",
+              file=sys.stderr)
+        variant, variant_src = "ECR88_KIJANG", f"fallback (unknown {variant})"
 
     log = Log()
     print("=" * 108)
     print("  ECR88 / X1 PanelLift  URDF validator")
     print(f"  numpy: {'yes (' + _np.__version__ + ')' if HAVE_NUMPY else 'NO -- using pure-python matrix math (same results)'}")
+    print(f"  ground truth: KinematicPara_new / {variant}   (from {variant_src})")
     print("=" * 108)
 
     # ---- source ----------------------------------------------------------- #

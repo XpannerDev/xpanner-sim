@@ -94,7 +94,7 @@
   <xacro:property name="m_base"        value="2713.0"/>  <!-- CLASS-TYPICAL [L8]  undercarriage INCLUDING both tracks, blade, final drives = 0.31 x 8752 kg operating weight. 0.31 is the middle of the published 28-34 % class band, nudged low because this reduced tail swing design loads the house. See H2. -->
   <xacro:property name="m_house"       value="4966.0"/>  <!-- DERIVED (RESIDUAL) [L9]  8752 minus base, boom, arm assy, bucket, operator. Every error in m_base lands here one for one: this is the largest single uncertainty in the model. Includes the 1 400 kg published counterweight. -->
   <xacro:property name="m_boom"        value="530.0"/>   <!-- PUBLISHED [L2]  Volvo component table, 3.55 m mono boom, "includes cylinder, piping and pin, excludes boom cyl. pin". Taken whole because the URDF models no cylinder links. -->
-  <xacro:property name="m_arm"         value="241.0"/>   <!-- DERIVED from PUBLISHED [L10]  published 280 kg arm assembly ("includes cylinder, linkage and pin") minus the carved out 4 bar: 280 - 22 - 16 - 1. The bucket cylinder stays inside this figure. -->
+  <xacro:property name="m_arm"         value="301.0"/>   <!-- DERIVED from PUBLISHED [L10]  2.1 m dipper. Published 340 kg arm assembly ("includes cylinder, linkage and pin") minus the carved out 4 bar: 340 - 22 - 16 - 1 = 301. The bucket cylinder stays inside this figure. For the 1.7 m arm the published assembly is 280 kg and this becomes 241. Volvo publishes both rows; Teo highlighted 2.1 m as the fleet spec (2026-09-11). -->
   <xacro:property name="m_inp_link"    value="22.0"/>    <!-- CLASS-TYPICAL [L11]  power link, pair of 0.42 m plates approx 20 x 140 mm section plus bosses. -->
   <xacro:property name="m_conn_rod"    value="16.0"/>    <!-- CLASS-TYPICAL [L12]  0.40 m idler link, lighter section than the power link. -->
   <xacro:property name="m_outp_link"   value="35.0"/>    <!-- CLASS-TYPICAL [L13]  quick coupler / tiltrotator top hitch about the bucket pin. NOT part of Volvo's 280 kg: on a bucket machine this member is the bucket's own top lug, so it is tool side. -->
@@ -143,8 +143,18 @@
        max") placed by the project's bisection onto the boom angle at which the TCP first
        touches ground (z = lenBottomZ1). Kept unchanged from ecr88_params.xacro so the
        team's FK verification still holds. -->
-  <xacro:property name="lim_boom_lower"   value="${deg * -26.47}"/>   <!-- OEM-TEAM span + DERIVED placement [L42]  boom fully UP. -->
-  <xacro:property name="lim_boom_upper"   value="${deg *  11.53}"/>   <!-- OEM-TEAM span + DERIVED placement [L42]  boom DOWN, TCP at ground. -->
+  <!-- These used to hardcode the RESULT of the anchor solve that ecr88_params.xacro
+       performs (deg * -26.47 and deg * 11.53). That made the boom anchor a two-source
+       value: switching machine_variant re-solved bm1GroundContactUrdf in params and
+       these literals silently kept the old 1.7 m placement, so the boom limits did not
+       move with the arm. Derive them from the params properties instead, so the anchor
+       lives in exactly one place.
+         jntBm1Lower/Upper in params compute the same thing; they are the same two
+         numbers by construction and are now unused aliases. -->
+  <xacro:property name="lim_boom_lower"   value="${deg * (bm1GroundContactUrdf - oemBm1AngleSpan)}"/>
+                                      <!-- OEM-TEAM span + DERIVED placement [L42]  boom fully UP. -->
+  <xacro:property name="lim_boom_upper"   value="${deg * bm1GroundContactUrdf}"/>
+                                      <!-- OEM-TEAM span + DERIVED placement [L42]  boom DOWN, TCP at ground. -->
 
   <!-- BOOM, MECHANICAL envelope. Needed for trenching; the PanelLift range above cannot
        dig at all (38 deg of boom never reaches below ground, and the published 4 130 mm
@@ -324,8 +334,13 @@
   <xacro:property name="com_boom_x" value="1.598"/>    <xacro:property name="com_boom_y" value="0.0"/>  <xacro:property name="com_boom_z" value="0.200"/>  <!-- CLASS-TYPICAL [L28]  0.45 x lenBm1: a curved mono boom is foot heavy (pin bosses, cylinder ears); z is toward the gooseneck. -->
   <xacro:property name="inr_boom_ixx" value="73.31"/>  <xacro:property name="inr_boom_iyy" value="669.73"/><xacro:property name="inr_boom_izz" value="606.33"/> <!-- DERIVED [L36], dims PUBLISHED [L31] -->
   <!-- arm_link: box 2.283 x 0.305 x 0.518, Volvo's PUBLISHED component envelope. -->
-  <xacro:property name="com_arm_x" value="0.680"/>     <xacro:property name="com_arm_y" value="0.0"/>   <xacro:property name="com_arm_z" value="0.030"/>  <!-- CLASS-TYPICAL [L29]  0.40 x lenArm: boom end pin bosses and cylinder ears dominate. -->
-  <xacro:property name="inr_arm_ixx" value="7.26"/>    <xacro:property name="inr_arm_iyy" value="110.07"/><xacro:property name="inr_arm_izz" value="106.54"/> <!-- DERIVED [L36], dims PUBLISHED [L32] -->
+  <xacro:property name="com_arm_x" value="0.840"/>     <xacro:property name="com_arm_y" value="0.0"/>   <xacro:property name="com_arm_z" value="0.030"/>  <!-- CLASS-TYPICAL [L29]  0.40 x lenArm = 0.40 x 2.1: boom end pin bosses and cylinder ears dominate. (1.7 m arm: 0.680) -->
+  <xacro:property name="inr_arm_ixx" value="10.26"/>   <xacro:property name="inr_arm_iyy" value="188.62"/><xacro:property name="inr_arm_izz" value="183.03"/> <!-- DERIVED [L36], dims PUBLISHED [L32]
+       2.1 m dipper, uniform box m=301 kg over the published envelope 2684 x 562 x 305 mm
+       (L x H x W): ixx = m/12 (W^2+H^2), iyy = m/12 (L^2+H^2), izz = m/12 (L^2+W^2).
+       The same formula reproduces the 1.7 m row (241 kg, 2283 x 518 x 305) as
+       7.26 / 110.06 / 106.54, which is what this file carried before the variant switch,
+       so the method is unchanged and only the dimensions and mass moved. -->
   <!-- 4 bar members: slender boxes on the surveyed pin to pin lengths. -->
   <xacro:property name="com_gnd_link_x" value="-0.1295"/><xacro:property name="com_gnd_link_y" value="0.0"/><xacro:property name="com_gnd_link_z" value="0.00925"/> <!-- DERIVED, primitive centroid [L30] -->
   <xacro:property name="inr_gnd_link_ixx" value="0.002"/><xacro:property name="inr_gnd_link_iyy" value="0.006"/><xacro:property name="inr_gnd_link_izz" value="0.006"/> <!-- DERIVED, box 0.260 x 0.100 x 0.100 -->

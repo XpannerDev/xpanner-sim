@@ -177,10 +177,22 @@
        See section [12] for the values each variant switches.
        ======================================================================== -->
   <!-- One of:
-         ECR88_KIJANG              = KinematicPara_new col "ECR88 기장"     (THIS BUILD)
-         ECR88_US1_2P1M            = KinematicPara_new col "ECR88 2.1m 미국#1"
-         ECR88_US1_2P1M_NEWSUCTION = KinematicPara_new col "... 신규흡착기"   -->
-  <xacro:property name="machine_variant"       value="ECR88_KIJANG"/>
+         ECR88_KIJANG              = KinematicPara_new col "ECR88 기장"
+         ECR88_US1_2P1M            = KinematicPara_new col "ECR88 2.1m 미국#1"  (THIS BUILD)
+         ECR88_US1_2P1M_NEWSUCTION = KinematicPara_new col "... 신규흡착기"
+
+       2026-09-11: switched KIJANG (arm 1.7 m) -> US1_2P1M (arm 2.1 m).
+       Teo (Slack #simulation, 11:34 KST): "Arm의 경우 저희가 주로 사용하는 사양은
+       2.1m로 보시면 될 것 같아요", and the Volvo dimension sheet he attached
+       highlights the 2.1 m dipper row. 2.1 m is the fleet spec; 1.7 m was only ever
+       the default because "기장" is the first column of the parameter sheet.
+
+       This moves more than lenArm. It also moves distArmToInpLinkX, lenToCylSmlArm2,
+       lenToCylLrgBkt, lenToCylLrgBkt2, angCylLrgBkt (see the branch in section [12]),
+       the arm assembly MASS (280 -> 340 kg published, see ecr88_dynamics.xacro), and
+       it invalidates the boom ground-contact anchor, which was solved with lenArm=1.7
+       and has been re-solved for 2.1 m. -->
+  <xacro:property name="machine_variant"       value="ECR88_US1_2P1M"/>
 
   <!-- ========================================================================
        [3] MACHINE CONFIGURATION OPTIONS
@@ -648,7 +660,18 @@
        *** STILL ASK OLIVIA: 이 각도의 0점과 (+)방향은? 수평 기준인가 실린더 기준인가? ***
        An explicit zero reference replaces this derivation outright.
        -->
-  <xacro:property name="bm1GroundContactUrdf"  value="11.53"/>
+  <!-- 2026-09-11: RE-SOLVED for the 2.1 m arm. This anchor is a function of lenArm and
+       of the whole tool chain below the bucket pin, so it does NOT survive a variant
+       switch and must be re-bisected whenever machine_variant changes.
+           arm 1.7 m  ->  +11.53 deg   (machine->URDF offset +42.53)
+           arm 2.1 m  ->  -27.73 deg   (machine->URDF offset  +3.27)   THIS BUILD
+       Worth noting: on the 2.1 m arm the offset between Olivia's machine frame and this
+       URDF's boom frame collapses to 3.3 deg, i.e. her zero and ours very nearly coincide.
+       On the 1.7 m arm it was 42.5 deg. That is weak evidence that her figures were taken
+       on the 2.1 m machine (the fleet spec) rather than the 1.7 m one. Suggestive, not
+       proof, since the anchor still rests on our own ground-contact assumption. It is
+       another reason to ask her which arm the angles belong to. -->
+  <xacro:property name="bm1GroundContactUrdf"  value="-27.73"/>
                         <!-- DERIVED [deg] boom angle at first ground contact, see above -->
   <xacro:property name="jntBm1Lower"           value="${pi/180*(bm1GroundContactUrdf - oemBm1AngleSpan)}"/>
                         <!-- = -26.47 deg, boom fully UP.   OEM-TEAM span + DERIVED placement -->
