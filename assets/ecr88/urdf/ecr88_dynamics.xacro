@@ -304,6 +304,79 @@
        cylinder-length to joint-angle map stays open, and so does the arm out-stop
        placement. It is now the single most valuable missing number in this file. -->
 
+  <!-- ==================================================================
+       VISIBLE HYDRAULIC CYLINDERS.  Cosmetic dressing, mimic-slaved.
+
+       A cylinder spans a fixed pin on the parent link and a moving pin on the
+       child link, so its inclination and its extension are both NON-LINEAR
+       functions of the joint angle, and URDF <mimic> is linear only. The
+       question was therefore not "can we" but "how wrong is the straight line".
+       Measured over each joint's actual range, with a MINIMAX (not least
+       squares) fit, which is what you want when the cap on the error is the
+       thing that matters:
+
+         cylinder | pitch err | rod-tip err | vs the 7.2 m machine
+         boom     |  0.23 deg |    16.8 mm  | 0.23 %   invisible
+         arm      |  0.97 deg |   108.5 mm  | 1.51 %   faintly visible
+
+       The boom fit is good because BOTH of its pins are surveyed vectors
+       (distCylLrgBm1, distCylSmlBm1). The arm fit is worse because only the
+       parent pin is a vector (distCylLrgArm); the arm-side pin is the SCALAR
+       lenToCylSmlArm = 0.53 and is assumed to sit on the arm centreline. On a
+       real machine it sits on a lug ABOVE the arm, and that missing
+       perpendicular offset is most of the 108 mm.
+
+       NO BUCKET CYLINDER IS DRAWN. Its pins exist only as scalars
+       (lenToCylLrgBkt, lenToCylLrgBkt1/2, lenToCylSmlBkt) with no perpendicular
+       component anywhere in the sheet, so there is nothing to aim it at. Adding
+       one would mean inventing its geometry.
+
+       Verified that Isaac Sim 6.0 keeps the coefficients: the importer writes
+       newton:mimicCoef1 (multiplier) and newton:mimicCoef0 (offset) alongside
+       newton:mimicJoint. Tested on this image with a deliberately non-unity
+       multiplier before relying on it.
+
+       Coefficients are q -> radians / metres, q being the DRIVING joint in rad:
+           barrel pitch  = phi_mult * q + phi_off
+           rod extension = d_mult   * q + d_off
+       ================================================================== -->
+  <xacro:property name="cyl_boom_phi_mult" value="1.330773"/>   <!-- DERIVED  minimax over [-65.73, -27.73] deg -->
+  <xacro:property name="cyl_boom_phi_off"  value="-0.115918"/>  <!-- DERIVED -->
+  <xacro:property name="cyl_boom_d_mult"   value="-0.109224"/>  <!-- DERIVED -->
+  <xacro:property name="cyl_boom_d_off"    value="-0.062094"/>  <!-- DERIVED -->
+  <xacro:property name="cyl_boom_len_min"  value="1.3341"/>     <!-- DERIVED  shortest pin-to-pin over the range -->
+  <!-- ARM-SIDE PIN DIRECTION, SOLVED 2026-09-11.
+       The sheet gives only the SCALAR lenToCylSmlArm = 0.53 with no direction, and the
+       first pass assumed it lay on the arm centreline. That assumption implies a
+       cylinder with len_min 1.9433 m and a stroke of only 0.4415 m, i.e. ret/stroke
+       4.40. No cylinder is built like that; the band is roughly 1.4-2.1.
+       Sweeping the pin direction and keeping only readings that yield a BUILDABLE
+       cylinder picks out a pin ~90 deg off the arm axis, which is also the standard
+       layout: the arm cylinder rod pins to a lug standing above the arm near its base.
+           alpha = +89 deg : len_min 1.6139, stroke 0.7709, ret/stroke 2.09  <- adopted
+           alpha =   0 deg : len_min 1.9433, stroke 0.4415, ret/stroke 4.40  (rejected)
+       Two criteria agree, so the direction is DERIVED rather than assumed. What does
+       NOT improve is the linear-mimic tracking error: over a 124 deg arm sweep it sits
+       at 115-130 mm for every pin direction, because the nonlinearity is inherent to
+       the sweep, not to the pin. 130 mm on a 7.2 m machine is 1.8 %. The boom cylinder
+       has no such problem (17.7 mm) because its sweep is only 38 deg. -->
+  <xacro:property name="cyl_arm_pin_alpha" value="89.0"/>       <!-- DERIVED [deg] off the arm axis -->
+  <xacro:property name="cyl_arm_phi_mult"  value="0.125370"/>   <!-- DERIVED  minimax over [0, 124] deg at alpha = +89 -->
+  <xacro:property name="cyl_arm_phi_off"   value="0.304604"/>   <!-- DERIVED -->
+  <xacro:property name="cyl_arm_d_mult"    value="0.356221"/>   <!-- DERIVED -->
+  <xacro:property name="cyl_arm_d_off"     value="0.077770"/>   <!-- DERIVED -->
+  <xacro:property name="cyl_arm_len_min"   value="1.6139"/>     <!-- DERIVED -->
+  <!-- Barrel outer radius = bore/2 plus a wall; rod radius is the published rod/2. -->
+  <xacro:property name="cyl_wall"          value="0.010"/>      <!-- ASSUMPTION  m, cosmetic -->
+  <xacro:property name="cyl_barrel_frac"   value="0.62"/>       <!-- ASSUMPTION  barrel length as a fraction of len_min -->
+  <!-- Token mass. The REAL cylinder mass is already inside the published link masses:
+       Volvo's 530 kg boom figure is stated to include the dipper arm cylinder, piping
+       and pin. Giving these links their true ~80/60 kg would double-count it. They
+       therefore carry a token mass and MUST NOT be used for dynamics; switch
+       model_cylinders:=false for any run where that matters. Total machine mass moves
+       9 149.1 -> 9 151.1 kg (+0.02 %). -->
+  <xacro:property name="m_cyl_token"       value="0.5"/>        <!-- GUESS, TOKEN -->
+
   <xacro:property name="eff_swing"    value="22900.0"/>   <!-- PUBLISHED [L56]  Volvo max swing torque 22.9 kN.m. ECR88D ONLY: the ECR88 Plus publishes no swing torque at all, so do not carry this across. -->
   <xacro:property name="eff_boom"     value="${cyl_relief_pa * pi / 4 * cyl_boom_bore * cyl_boom_bore * 0.4763}"/>
                                   <!-- DERIVED from PUBLISHED [L61]  = 121 256 N.m. 29.4 MPa x pi/4 x (105 mm bore)^2 = 254.6 kN, x the 0.4763 m max moment arm from the surveyed pin geometry. The bore is NO LONGER class-typical: the parts catalogue publishes 105 mm, exactly the value that was assumed, so the +/-10 % bore uncertainty this line used to carry is retired. What remains uncertain is the MOMENT ARM, which rests on the T9 pin-frame assumption. Sanity: holding the front end horizontal at full stretch needs 57.6 kN.m (margin 2.10x). -->

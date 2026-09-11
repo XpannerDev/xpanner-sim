@@ -200,6 +200,10 @@
   <xacro:arg name="use_meshes"          default="false"/>
   <xacro:arg name="use_ros2_control"    default="false"/>
   <xacro:arg name="model_bucket_fourbar" default="true"/>
+  <!-- Visible boom and arm hydraulic cylinders, mimic-slaved to their joints.
+       Cosmetic: token mass, no actuation, real mass already inside m_boom.
+       Set false for any physics run where four extra slaved bodies are unwanted. -->
+  <xacro:arg name="model_cylinders"     default="true"/>
   <xacro:arg name="mesh_package"        default="xpanner_sim"/>
   <xacro:arg name="mesh_dir"            default="assets/ecr88/meshes"/>
   <xacro:arg name="mesh_visual_ext"     default="dae"/>
@@ -701,6 +705,96 @@
        any physics run that is not solving the loop - two free links dangling off the
        tool are a solver liability).
        ===================================================================== -->
+
+  <!-- =====================================================================
+       HYDRAULIC CYLINDERS (visible, mimic-slaved, cosmetic)
+
+       Each cylinder is a barrel pinned to the parent link and a rod sliding out
+       of it. Both the barrel's inclination and the rod's extension are driven
+       by <mimic> off the joint the cylinder actuates, using the minimax linear
+       coefficients derived in ecr88_dynamics.xacro. Isaac Sim 6.0 carries the
+       multiplier and offset through import (newton:mimicCoef1 / mimicCoef0),
+       verified on this image, so the cylinders TRACK when the joint moves
+       instead of detaching - which is the whole reason they are worth drawing.
+
+       These are NOT a closed-loop model. The rod tip lands within 17 mm (boom)
+       or 109 mm (arm) of the real pin rather than exactly on it; the linear fit
+       cannot do better. If exact cylinder kinematics are ever needed, drop the
+       mimic and close the loop in USD the same way the bucket 4-bar does.
+
+       Radii are real: barrel = published bore/2 plus a wall, rod = published
+       rod/2. Masses are tokens - see the note in ecr88_dynamics.xacro.
+       ===================================================================== -->
+  <xacro:macro name="hyd_cylinder"
+               params="name parent driver anchor_xyz phi_mult phi_off d_mult d_off
+                       len_min bore rod d_lo d_hi">
+    <link name="${name}_barrel">
+      <xacro:inertial_cylinder mass="${m_cyl_token}" radius="${bore * half + cyl_wall}"
+                               length="${len_min * cyl_barrel_frac}"
+                               xyz="${len_min * cyl_barrel_frac * half} 0 0" rpy="0 ${half_pi} 0"/>
+      <xacro:detail material="xpanner_steel"
+                    xyz="${len_min * cyl_barrel_frac * half} 0 0" rpy="0 ${half_pi} 0">
+        <cylinder radius="${bore * half + cyl_wall}" length="${len_min * cyl_barrel_frac}"/>
+      </xacro:detail>
+    </link>
+    <joint name="${name}_pitch" type="revolute">
+      <parent link="${parent}"/>
+      <child  link="${name}_barrel"/>
+      <origin xyz="${anchor_xyz}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <mimic joint="${driver}" multiplier="${phi_mult}" offset="${phi_off}"/>
+      <!-- Non-zero on purpose: a mimic-slaved joint still gets a DRIVE on import, and a
+           drive with maxForce 0 cannot hold its slaved target. This is the pin the
+           barrel swings on, not an actuator, so the number only has to be large enough
+           not to limit; it is the cylinder's own axial force through a 0.1 m token arm. -->
+      <limit lower="${-pi}" upper="${pi}"
+             effort="${cyl_relief_pa * pi / 4 * bore * bore * 0.1}" velocity="2.0"/>
+    </joint>
+
+    <link name="${name}_rod">
+      <xacro:inertial_cylinder mass="${m_cyl_token}" radius="${rod * half}" length="${len_min}"
+                               xyz="${len_min * half} 0 0" rpy="0 ${half_pi} 0"/>
+      <xacro:detail material="xpanner_accent"
+                    xyz="${len_min * half} 0 0" rpy="0 ${half_pi} 0">
+        <cylinder radius="${rod * half}" length="${len_min}"/>
+      </xacro:detail>
+    </link>
+    <joint name="${name}_extend" type="prismatic">
+      <parent link="${name}_barrel"/>
+      <child  link="${name}_rod"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <axis xyz="1 0 0"/>
+      <mimic joint="${driver}" multiplier="${d_mult}" offset="${d_off}"/>
+      <!-- Here the effort IS physical: the cylinder's extend force at the published
+           implement relief, 29.4 MPa x pi/4 x bore^2. Boom 254.6 kN, arm 187.0 kN.
+           Velocity is a plausible rod speed for this class, CLASS-TYPICAL. -->
+      <limit lower="${d_lo}" upper="${d_hi}"
+             effort="${cyl_relief_pa * pi / 4 * bore * bore}" velocity="0.30"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:if value="$(arg model_cylinders)">
+    <!-- BOOM cylinder. Both pins are surveyed vectors, so this one is honest to 17 mm.
+         Barrel pinned at distCylLrgBm1 on the boom mount; it aims at distCylSmlBm1
+         on the boom, which is where the rod tip lands. -->
+    <xacro:hyd_cylinder name="cyl_boom" parent="boom_mount_link" driver="boom_joint"
+                        anchor_xyz="${distCylLrgBm1_x} ${distCylLrgBm1_y} ${distCylLrgBm1_z}"
+                        phi_mult="${cyl_boom_phi_mult}" phi_off="${cyl_boom_phi_off}"
+                        d_mult="${cyl_boom_d_mult}"     d_off="${cyl_boom_d_off}"
+                        len_min="${cyl_boom_len_min}" bore="${cyl_boom_bore}" rod="${cyl_boom_rod}"
+                        d_lo="-0.05" d_hi="0.15"/>
+    <!-- ARM cylinder. Parent pin distCylLrgArm is emitted on the BOOM TIP per T8, so the
+         anchor below carries the lenBm1 + lenBm2 offset. The arm-side pin is the scalar
+         lenToCylSmlArm assumed on the arm centreline - that assumption is why this one is
+         only honest to 109 mm. See ecr88_dynamics.xacro. -->
+    <xacro:hyd_cylinder name="cyl_arm" parent="boom_link" driver="arm_joint"
+                        anchor_xyz="${lenBm1 + lenBm2 + distCylLrgArm_x} ${distCylLrgArm_y} ${distCylLrgArm_z}"
+                        phi_mult="${cyl_arm_phi_mult}" phi_off="${cyl_arm_phi_off}"
+                        d_mult="${cyl_arm_d_mult}"     d_off="${cyl_arm_d_off}"
+                        len_min="${cyl_arm_len_min}" bore="${cyl_arm_bore}" rod="${cyl_arm_rod}"
+                        d_lo="0.0" d_hi="0.90"/>
+  </xacro:if>
+
   <link name="ground_link">
     <xacro:inertial_cylinder mass="${m_gnd_link}" radius="${geo_linkage_r}"
                              length="${lenGndLink}"
