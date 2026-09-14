@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **문서 상태** | Draft v0.1 — 검토 및 결정 요청 |
-| **작성일** | 2026-09-11 |
+| **문서 상태** | Draft v0.2 — 검토 및 결정 요청 (§0.1 에 09-14 진행 상황) |
+| **작성일** | 2026-09-11 (갱신 2026-09-14) |
 | **작성** | jude |
 | **독자** | Olivia (X1 PanelLift product), David / 신흥주 (XpannerLab/X1Exc owner), 이찬호 |
 | **대상 장비** | Volvo ECR88 short-swing excavator + Xpanner X1 PanelLift front end |
@@ -20,6 +20,22 @@
 | D3 | Joint limit 확보 경로 — 캘리브레이션 영상 vs 실린더 스트로크 실측 vs X1Exc 소스 상수 | David | 2주 내 |
 | D4 | 리포지토리 경계 — `xpanner-sim`(asset/sim) ↔ `X1Exc`(제어) 분리안 승인 | David | 2주 내 |
 | D5 | AGX Dynamics 30일 체험 착수 시점 — 지금 vs 굴착(trenching) 단계 진입 시 | 팀 합의 | 열린 상태 |
+
+### 0.1 진행 상황 — 2026-09-14
+
+| # | 상태 | 내용 |
+|---|---|---|
+| D1 | 대기 | Teo 확인: 상부체 모델만 존재, 소재 정보 없음. **프리미티브가 당분간 정식 경로.** |
+| D2 | 후보 확정, 결정 대기 | 1,190 후보 탐색으로 카메라 2대 권고안 도출 (노션 5장). |
+| D3 | **경로 확정** | X1Exc 를 끝까지 읽은 결과 **펌웨어에는 관절 limit·실린더 스트로크가 없고, 구조상 있을 수 없다** (각도를 IMU 차분으로 잰다). 캘리브 NVM 까지 확인. → **Teo 의 스트로크 값이 유일한 경로.** 받으면 펌웨어 실린더 기하로 `L(q)` 를 역산해 바로 관절 범위가 된다. |
+| D4 | **실행 중** | `xpanner-sim/sil/` 이 X1Exc 생성 C 를 **읽기만 해서** 로컬 빌드한다. X1Exc 에는 아무것도 쓰지 않는다. 경계는 "X1Exc = 소스 오브 트루스, xpanner-sim = 빌드·하네스·플랜트". |
+| D5 | 열린 상태 | 변경 없음. |
+| **D6 (신규)** | **결정 필요 — David** | 레포의 생성 C 는 **ShortArm(1.7 m, 한국)** 파라미터로 빌드돼 있고, `ECR88D_LongArm.m` 은 구 스키마라 Picking/Positioning 에 필요한 필드가 없다. **미국 2.1 m 장비를 검증하려면 현행 스키마 LongArm 파라미터가 필요.** 현장 장비가 어느 빌드인지도 확인 필요. |
+| **D7 (신규)** | **요청 — Olivia/Teo** | 흡착 시뮬레이션용: 진공 매니폴드(어느 컵이 어느 압력센서 회로인지 — 펌웨어·DBC 어디에도 없음), 스윙 정렬 근접스위치 형상(없으면 자동 모드 진입 불가), 버킷 IMU(CAN 0x74)가 4절 입력링크에 붙어 있는지. |
+
+**펌웨어 SIL 현황:** 생성 C 가 이 서버에서 컴파일돼 프로세스 안에서 돈다. 부팅 인히빗, 스윙 초기화 게이트,
+NoTarget → Standby 가 명세대로 동작함을 테스트로 확인 (`sil/tests/`). 상태머신·입출력 전체 분석은 서버의
+`resources/X1Exc_SIL_spec.md`. 다음은 Isaac 쪽 IMU 퍼블리셔 + 근접스위치를 붙여 **캘리브 step 28** 을 첫 실연결로 돌리는 것.
 
 > **정직성 원칙**: 이 문서와 앞으로 작성될 URDF에서 출처가 없는 수치는 전부 `ESTIMATE` 로 명시하고 근거 가정을 인라인으로 적는다.
 > 질량·관성·joint limit은 **현재 확보된 어떤 문서에도 존재하지 않는다.** 그럴듯한 값을 조용히 채워 넣지 않는다.
@@ -90,7 +106,7 @@ Attachment 체인 가산 검증:
 | 없는 것 | 왜 필요한가 | **누구에게 무엇을 요청** | 대체 수단 (임시) |
 |---|---|---|---|
 | **질량 / CoG / 관성 텐서** | 동역학 시뮬레이션, 자중 처짐, 굴착 반력 전부 불가 | **Olivia** → ECR88 3D 모델(STEP/Parasolid)과 **재질/밀도 정보**. CAD에서 mass property 추출이 가장 빠름. 불가 시 **David** → Volvo 스펙시트의 링크별 중량 | 링크별 `ESTIMATE` 밀도 기반(강재 7850 kg/m³) box 근사, TODO 블록에 전량 명기 |
-| **Joint limit (min/max 각도)** | limit 없으면 IK·충돌 검사·조작 시나리오 전부 무의미 | **David** → X1Exc 소스 내 각도 clamp 상수 또는 실린더 스트로크(retracted/extended). 없으면 **Olivia** → 실장비에서 각 축 full-stroke 실측 1회 | 캘리브레이션 영상 7종에서 극한 자세 프레임 추출해 역산 (영상 3.03GB, 필요 시점에 선택 다운로드) |
+| **Joint limit (min/max 각도)** | limit 없으면 IK·충돌 검사·조작 시나리오 전부 무의미 | ~~David → X1Exc 소스 내 각도 clamp 상수~~ **09-14: 펌웨어에 없음이 확정** (clamp 는 붐 q≤0, 암 q≥0 두 개뿐). **Teo** → 실린더 스트로크(retracted/extended) 또는 2D working-range 도면. 없으면 **Olivia** → 실장비에서 각 축 full-stroke 실측 1회 | 캘리브레이션 영상 7종에서 극한 자세 프레임 추출해 역산 (영상 3.03GB, 필요 시점에 선택 다운로드) |
 | **3D 메쉬** | 시각적 검증, 정확한 collision, 카메라 FOV 가림 판단 | **Olivia** → ECR88 3D 모델. 포맷 우선순위: STEP > FBX > OBJ. **좌표 원점을 Chs 프레임에 맞춰 주면** 변환 공수 대폭 절감 | LenBottom\*/LenUpp\* 바운더리 수치 기반 primitive box (§3.1) |
 | **센서 구성 확정본** | 어떤 센서를 몇 개 어디에 — asset의 최종 형태를 결정 | **Olivia, 이찬호** → §5 후보 프레임 표에 체크. 모델명/FOV/해상도/마운트 브래킷 유무 | 후보 프레임에 empty frame만 배치, 센서는 xacro include로 나중에 부착 |
 | **Undercarriage → Chassis 오프셋** | swing 축의 실제 높이. `distUcTo*` 행은 전부 `Delete` 처리됨 | **Olivia** → Uc 기준 Chs 원점 높이 1회 실측 | `LenBottomZ1 = -1.445` (Chs 기준 하부 바운더리 최저점)에서 **지면~Chs ≈ 1.445 m** 로 역산. 하부 박스가 지면에 접한다는 가정 필요 → `ESTIMATE` |
