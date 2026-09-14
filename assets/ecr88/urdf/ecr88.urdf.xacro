@@ -1327,7 +1327,7 @@
          imuChs   -> house      JntAngBodyRoll, JntAngBodyPitch  (absolute)
          imuBm1   -> boom       JntAngBodyToBoom   = boom  - chassis
          imuArm   -> arm        JntAngBoom2ToArm   = arm   - boom
-         imuLink  -> output     JntAngArmToBucket  = output- arm
+         imuLink  -> INPUT link JntAngArmToInpLink = input - arm   (bus name: bktImu)
          imuTilt  -> tilt       JntAngTilt
        That is why there is no encoder anywhere in this machine, and it is why these
        frames have to be right: a wrong mounting rotation does not shift one reading,
@@ -1342,18 +1342,32 @@
        accelerometer read. Position only enters through the lever-arm term under
        angular acceleration, which is small here and zero in steady motion.
 
-       All six matrices are proper rotations (det = +1, orthonormal to 1e-7), and the
-       three arm-chain boards decompose cleanly as Rz(yaw) * Rx(90 deg) with residuals
-       under 0.5 deg: the same board on a vertical side plate, the yaw being that
-       plate's angle to the member. imuBm1's yaw is 32.4 deg, which is the facet angle
-       you would expect on a curved gooseneck boom; imuArm and imuLink are -6.0 and
-       -3.4 deg, i.e. plates nearly parallel to their members. imuChs is flat and
-       yawed 101 deg (a box in the cabinet); imuTilt is a full axis permutation.
-       That consistency is the reason we read the matrix as IMU -> link rather than
-       its transpose: under the transpose the calibrated angle would be a rotation
-       about the sensor rather than about the member, which is not a thing a bracket
-       has. IF THE SIM'S CAN1 OUTPUT EVER DISAGREES WITH A RECORDED LOG BY A
-       TRANSPOSE, THIS IS THE ASSUMPTION TO OVERTURN FIRST.
+       All six matrices are proper rotations (det = +1, orthonormal to 1e-7).
+
+       THE MATRIX IS R_imu<-link, SO THESE rpy ARE rpy(M TRANSPOSE). (2026-09-14)
+       An earlier revision used rpy(M) and said "if this ever disagrees by a transpose,
+       overturn this first". It did, and it is overturned - by the firmware itself, not
+       by a log. The generated code (X1Exc MdlApp.c:10940, ImuToLink) is
+           linkOri = imuOri * mntOri
+       with imuOri = R_world<-imu from the quaternion. So mntOri = R_imu<-link, and a
+       URDF child frame (whose origin rotation is R_link<-imu) needs mntOri'.
+       The old argument for rpy(M) - "the arm-chain boards decompose as Rz(yaw)*Rx(90)"
+       - was never discriminating: M' decomposes just as cleanly as Rx(-90)*Rz(-yaw).
+       A test that DOES discriminate is where the board's normal points. A board bolted
+       flat to a side plate has its sensor Z on the member's pin axis (link Y):
+                    |<imu z, link Y>| under M'     under M (old)
+           imuBm1            0.999999            0.843883   <- 32 deg off
+           imuArm            0.999963            0.994412
+           imuLink           0.999986            0.998255
+           imuChs (vs Z)     0.999952            0.999952
+       Only the transpose puts every board flat on its plate. The yaw angles quoted in
+       the per-frame comments (32.4 / -6.0 / -3.4 / 101 deg) are unchanged in magnitude;
+       what changed is which frame they rotate.
+       OPEN: the SENSE of each axis. The firmware also mirrors the raw quaternion on
+       the way in, (w,x,y,z) -> (w,-x,y,-z) with acc/gyro X and Z negated ("Left handed
+       to right handed", MdlApp.c:10904-10915). A SIL publisher must pre-apply that
+       mirror. Whether any axis then comes out inverted is not decidable from source -
+       check MdlApp_Y.jnts.*.q against Isaac ground truth at one known pose.
 
        Each frame's axes are the SENSOR's axes, so a reading taken in this frame is
        directly comparable to the real CAN1 payload.
@@ -1376,28 +1390,37 @@
     <!-- imuChs. Flat, yawed 101.012 deg. Position: in the house, low and central. -->
     <xacro:imu_mount name="imu_chs" parent="house_link"
                      xyz="0.20 0.30 ${lenUppZ1 + 0.25}"
-                     rpy="0.007485990 -0.006288474 1.762991172"/>
+                     rpy="-0.004742750 -0.008549333 -1.762994439"/>
     <!-- imuBm1. Side plate at 32.447 deg. Position: outboard face near the boom foot. -->
     <xacro:imu_mount name="imu_boom" parent="boom_link"
                      xyz="0.70 ${-geo_boom_sec_w * half - 0.02} 0.20"
-                     rpy="1.571657101 -0.001138020 0.566315716"/>
+                     rpy="-1.571816342 -0.566316481 -0.000590754"/>
     <!-- imuArm. Side plate at -6.043 deg. -->
     <xacro:imu_mount name="imu_arm" parent="arm_link"
                      xyz="0.45 ${-geo_arm_sec_w * half - 0.02} 0.12"
-                     rpy="1.579022612 -0.002439665 -0.105463699"/>
-    <!-- imuLink. Side plate at -3.372 deg. The firmware calls the 4-bar OUTPUT member
-         "Link" in the parameter file and "Bucket" on the bus; it is the member the
-         tool hangs from (distOutpLinkToTiltMnt = 0), so its attitude IS the tool's. -->
-    <xacro:imu_mount name="imu_link" parent="output_link"
-                     xyz="0.15 -0.12 0.05"
-                     rpy="1.575926179 0.001593256 -0.058849482"/>
-    <!-- imuTilt. Full axis permutation: sensor +X along the member's -Z. Its pitch is
-         88.0 deg, i.e. near the gimbal-lock pole of the rpy parameterization, so these
-         three numbers are individually ill-conditioned even though the matrix they
-         rebuild is exact to 7e-7. Do not hand-tune them; regenerate from a11..a33. -->
+                     rpy="-1.579068528 0.105440054 -0.003310372"/>
+    <!-- imuLink (bus: bktImu, CAN node 0x74). Side plate at -3.372 deg.
+         It is on the four-bar INPUT link, not the output link this frame used to hang
+         from. X1Exc KinematicsCalc (MdlApp.c:11680-11686):
+             jntAng_ArmToInpLink = imus.link.euAng(2) - imus.arm.euAng(2)
+             angInpLink = jntAng_ArmToInpLink - angArmToGndLink
+             [angConnRod, angOutpLink] = CalcAngLinkOutp(..., angInpLink)
+         i.e. the firmware reads the input-link angle and SOLVES the four-bar for the
+         output link. Mounting it on output_link would feed the solver the wrong member
+         and produce a silent tool-attitude error - the exact class of fault SIL is for.
+         Only emitted when the four-bar is modelled: without input_link there is no
+         member this sensor could honestly report. Position is a GUESS (side face). -->
+    <xacro:if value="$(arg model_bucket_fourbar)">
+      <xacro:imu_mount name="imu_link" parent="input_link"
+                       xyz="${lenInpLink * half} ${-geo_linkage_r - 0.02} 0"
+                       rpy="-1.575935070 0.058856870 0.001290998"/>
+    </xacro:if>
+    <!-- imuTilt. Full axis permutation. Under the transpose its pitch is -0.57 deg, so
+         the old gimbal-lock warning (pitch 88 deg under M) no longer applies; still,
+         regenerate from a11..a33 rather than hand-tuning. -->
     <xacro:imu_mount name="imu_tilt" parent="tilt_link"
                      xyz="0.05 0.0 -0.08"
-                     rpy="0.911970428 1.536501790 2.473026331"/>
+                     rpy="1.549803632 -0.010023128 -1.597706287"/>
     <!-- imuBm2 is deliberately absent. Its matrix in the firmware is the identity and
          lenBm2 = 0: the slot exists on the bus, the sensor does not exist on the
          machine. Emitting a frame for it would invent hardware. -->

@@ -426,18 +426,46 @@
   <!-- ============================================================================
        [4]  VELOCITY  [rad/s]
 
-       THESE ARE THE MACHINE'S OWN CALIBRATED NUMBERS, not our derivation.
-       XpannerLab/X1Exc  ControlModel/Data/ECR88D_LongArm.m, struct reqSpdToActCmd.
+       SOURCE: XpannerLab/X1Exc  ControlModel/Data/ECR88D_LongArm.m, struct reqSpdToActCmd.
        Each axis carries a 3 point table  X = [0, 0.001, vmax]  ->  Y = [0, deadband, cmdmax]
-       mapping a REQUESTED JOINT SPEED to a proportional valve command in percent. The
-       last X entry is therefore the fastest speed the firmware will ever ask for, and
-       the last Y entry is the command it asks for there.
+       mapping a REQUESTED ACTUATOR SPEED to a proportional valve command in percent. The
+       last X entry is the fastest speed the firmware will ever ask for.
 
-       WHAT THIS REPLACED, AND WHY IT WAS WRONG
-       The previous values here were derived as flow / bore area / moment arm with the
-       Stage V triple pump (2x68+54 l/min) summed onto one function. Every one of them
-       came out 2.0 to 3.0x the firmware number, consistently, which is the signature of
-       a wrong assumption rather than scattered error. Two reasons, both checkable:
+       !! THE X UNIT IS NOT THE SAME ON EVERY AXIS (corrected 2026-09-14) !!
+         swing, tilt, rot     joint rate, rad/s
+         bm1, arm, link       CYLINDER STROKE RATE, m/s
+       X1Exc SetTarActuators (Stateflow chart_1076) builds the boom/arm/link "actuator"
+       state as [q, qDot] = CalStrkAndSpd(lenToCylLrg*, lenToCylSml*, angCylLrg*, angCylSml*,
+       isCyl*TopMnt, jnt.q, jnt.qDot) - cylinder length and its rate - and AutoVelDmdToVlvCmd
+       (chart_2463) interpolates THAT into the table. An earlier revision of this file
+       wrote bm1 0.48 / arm 0.43 / link 0.50 straight in as rad/s. As joint limits they cut
+       what the firmware itself commands by 2-4x (table below), so a SIL run would have
+       shown a tracking error that is really the plant clipping the controller.
+
+       Joint rate implied by the firmware's own cylinder clamp, |qDot| = vmax / |dL/dq|, with
+       dL/dq from CalStrkAndSpd and LongArm geometry, over Olivia's range read in the
+       firmware sign convention (boom q <= 0, arm q >= 0; chart_1011 qBm1Max = 0, qArmMin = 0):
+         boom  0.48 m/s   q -69..-31 deg   |dL/dq| 0.235..0.412 m/rad   1.17..2.04 rad/s
+         arm   0.43 m/s   q  31..155 deg   |dL/dq| 0.215..0.515 m/rad   0.83..2.00 rad/s
+         link  0.50 m/s   q -120..-24 deg  |dL/dq| 0.220..0.420 m/rad   1.19..2.27 rad/s
+       The URDF limit takes the top of each band: it is a runaway guard, and it must not
+       bind before the (future) valve model does. The link band stops at -24 deg because
+       dL/dq -> 0 as the link cylinder goes over-centre near +16 deg, where any finite
+       stroke rate maps to an unbounded joint rate; that is a geometric singularity to keep
+       the joint away from, not a speed to allow.
+       CAUTION ON PHYSICAL REALISM: 0.48 m/s through a 105 mm bore is far more flow than
+       one function gets from this pump (the flow derivation below gave 0.262 m/s rod
+       speed). The boom/arm/link vmax look like DEMAND CLAMPS - they are round 2-figure
+       values, byte-identical between LongArm and ShortArm, where swing/tilt/rot carry
+       7-9 significant figures from a real calibration. So the tags on those three below
+       say what the number is: the firmware's clamp, not the machine's measured speed.
+
+       WHAT THE ROTARY AXES REPLACED (swing / tilt / rot - these comparisons stand)
+       The previous values were derived as flow / bore area / moment arm with the
+       Stage V triple pump (2x68+54 l/min) summed onto one function, or class-typical.
+       Swing, tilt and rotator came out 1.5 to 2.9x the firmware number. (This paragraph
+       used to say "every axis, 2.0 to 3.0x"; for boom/arm/link that compared m/s to
+       rad/s and was void.) Two reasons, both checkable:
          - the pump does not sum onto one implement function the way that derivation
            assumed (flagged there as an assumption, [L65]);
          - auto mode caps the valve at PropVlvCmdAutoLimit = 70 % (SysPar.m:251), and
@@ -452,9 +480,9 @@
        two and the pair is preserved in section [4b] for the actuator model that needs it.
        ============================================================================ -->
   <xacro:property name="vel_swing"    value="0.5889427"/> <!-- OEM-FIRMWARE  swingLe 0.5889 / swingRi 0.5196 rad/s = 5.6 / 5.0 r/min. NOTE this is well under the published free swing speed (8.3 r/min, 0.869 rad/s): swing is the one axis whose command is capped at 60 % instead of 80 %, which is what you would do on a machine carrying glass. The published figure describes the bare ECR88; this one describes it under X1. -->
-  <xacro:property name="vel_boom"     value="0.48"/>      <!-- OEM-FIRMWARE  bm1Up 0.41 / bm1Down 0.48 rad/s -->
-  <xacro:property name="vel_arm"      value="0.43"/>      <!-- OEM-FIRMWARE  armIn 0.38 / armOut 0.43 rad/s -->
-  <xacro:property name="vel_bucket"   value="0.50"/>      <!-- OEM-FIRMWARE  linkIn 0.28 / linkOut 0.50 rad/s. The firmware calls this axis "link", not "bucket": on this machine the cylinder drives the 4 bar input link and the attachment hangs off the output link. Same joint, the firmware's name for it is the more accurate one. -->
+  <xacro:property name="vel_boom"     value="2.1"/>       <!-- DERIVED (OEM-FIRMWARE demand clamp x CalStrkAndSpd Jacobian)  0.48 m/s cylinder -> 1.17..2.04 rad/s over the boom range; see the table above. The cylinder numbers themselves are cyl_spd_bm1_* in [4b]. -->
+  <xacro:property name="vel_arm"      value="2.0"/>       <!-- DERIVED (same)  0.43 m/s cylinder -> 0.83..2.00 rad/s. -->
+  <xacro:property name="vel_bucket"   value="2.3"/>       <!-- DERIVED (same)  0.50 m/s cylinder -> 1.19..2.27 rad/s. The firmware calls this axis "link", not "bucket": the cylinder drives the 4 bar input link and the attachment hangs off the output link. Same joint, the firmware's name for it is the more accurate one. -->
   <xacro:property name="vel_tilt"     value="0.2311245"/> <!-- OEM-FIRMWARE  tiltPosi 0.2033 / tiltNega 0.2311 rad/s -->
   <xacro:property name="vel_rotator"  value="0.342202"/>  <!-- OEM-FIRMWARE  rotPosi 0.3186 / rotNega 0.3422 rad/s = 3.3 r/min. Our CLASS-TYPICAL guess of 9.5 r/min was 2.9x too fast. -->
   <xacro:property name="vel_inp_link" value="${vel_bucket}"/> <!-- ALIAS  the link axis above IS this joint. -->
@@ -485,11 +513,20 @@
          PropVlvCmdAutoLimit   = 70 %                (SysPar.m:251)
              ceiling in auto mode, below several of the cmdmax values below
 
+       Actuator speed at cmdmax (table X end). UNITS DIFFER BY AXIS - see [4]:
+       rad/s for swing/tilt/rot (vel_* above), m/s of CYLINDER STROKE for these three.
+
        Nothing in the URDF consumes these yet. They live here so the number sits with the
        joint it belongs to when the valve model is written.
        ============================================================================ -->
   <xacro:property name="vlv_swing_le"  value="32.0"/>  <xacro:property name="vlv_swing_le_max"  value="60.0"/>
   <xacro:property name="vlv_swing_ri"  value="28.7"/>  <xacro:property name="vlv_swing_ri_max"  value="60.0"/>
+  <xacro:property name="cyl_spd_bm1_up"   value="0.41"/> <!-- OEM-FIRMWARE  m/s cylinder, reqSpdToActCmd.bm1Up_X(end). Demand clamp, see [4]. -->
+  <xacro:property name="cyl_spd_bm1_dn"   value="0.48"/> <!-- OEM-FIRMWARE  m/s cylinder, bm1Down_X(end) -->
+  <xacro:property name="cyl_spd_arm_in"   value="0.38"/> <!-- OEM-FIRMWARE  m/s cylinder, armIn_X(end) -->
+  <xacro:property name="cyl_spd_arm_out"  value="0.43"/> <!-- OEM-FIRMWARE  m/s cylinder, armOut_X(end) -->
+  <xacro:property name="cyl_spd_link_in"  value="0.28"/> <!-- OEM-FIRMWARE  m/s cylinder, linkIn_X(end) -->
+  <xacro:property name="cyl_spd_link_out" value="0.50"/> <!-- OEM-FIRMWARE  m/s cylinder, linkOut_X(end) -->
   <xacro:property name="vlv_boom_up"   value="34.0"/>  <xacro:property name="vlv_boom_up_max"   value="80.0"/>
   <xacro:property name="vlv_boom_dn"   value="31.0"/>  <xacro:property name="vlv_boom_dn_max"   value="80.0"/>
   <xacro:property name="vlv_arm_in"    value="27.0"/>  <xacro:property name="vlv_arm_in_max"    value="80.0"/>
