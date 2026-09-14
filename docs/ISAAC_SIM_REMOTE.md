@@ -2,7 +2,10 @@
 
 > 이 문서의 모든 명령은 **2026-09-11 이 서버에서 실제로 실행해 검증**했다.
 > 검증하지 못한 항목은 본문에 인라인으로 표시했고 §8 에 모아 두었다.
-> 서버: `i-027baebf60af5ad06` (ap-northeast-2), public IP **3.37.123.120**, NVIDIA **L4 23034 MiB 한 장**,
+> 서버: `i-027baebf60af5ad06` (ap-northeast-2), NVIDIA **L4 23034 MiB 한 장**,
+> public IP **3.37.129.139** (2026-09-14 기준). ⚠️ **Elastic IP 가 없어서 인스턴스를 재시작하면 IP 가 바뀐다**
+> (09-11 은 `3.37.123.120` 이었다). 이 문서의 IP 를 믿지 말고 항상 §3.0.2 로 확인할 것.
+> 재부팅하면 컨테이너도 사라진다: `ISAAC_CONTAINER=isaac-sim-jude ./scripts/run_isaac.sh stream`.
 > Isaac Sim 은 **Docker 이미지 `nvcr.io/nvidia/isaac-sim:6.0.1` 로만** 존재한다 (native 설치도 `python.sh` 도 호스트에 없음).
 
 ---
@@ -10,14 +13,14 @@
 ## 1. 한 줄 요약
 
 서버에서 Isaac Sim 을 **headless WebRTC streaming 모드**로 띄우고, 노트북에 설치한
-**Isaac Sim WebRTC Streaming Client** 로 `3.37.123.120` 에 접속해 GUI 를 본다.
+**Isaac Sim WebRTC Streaming Client** 로 서버 public IP(§3.0.2)에 접속해 GUI 를 본다.
 X11/VNC 가 아니라 NVENC 하드웨어 인코딩 기반 WebRTC 이며, **TCP 49100 (signaling) + UDP 47998 (media)**
 두 포트가 모두 노트북까지 도달해야 한다. `ssh -L` 은 TCP 만 나르므로 **단독으로는 화면이 안 나온다**(§5).
 
 전체 흐름:
 
 ```
-[노트북] WebRTC Client ──TCP 49100 signaling──▶ [EC2 3.37.123.120] docker run --network=host
+[노트북] WebRTC Client ──TCP 49100 signaling──▶ [EC2 <PUBLIC_IP>]  docker run --network=host
                        ◀──UDP 47998 media───── Isaac Sim 6.0.1 (isaacsim.exp.full.streaming.kit)
 ```
 
@@ -132,7 +135,7 @@ PUBLIC_IP=$(TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
   -H "X-aws-ec2-metadata-token-ttl-seconds: 21600") && \
   curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
   http://169.254.169.254/latest/meta-data/public-ipv4)
-echo "$PUBLIC_IP"     # 오늘 기준: 3.37.123.120
+echo "$PUBLIC_IP"     # 재시작마다 바뀐다. 09-11: 3.37.123.120 / 09-14: 3.37.129.139
 ```
 
 ### 3.1 A안 (기본) — 기본 포트로 띄우기
@@ -157,7 +160,7 @@ docker run -d --name isaac-sim-jude --gpus all --network=host \
   -v /home/ubuntu/docker/isaac-sim/data:/isaac-sim/.local/share/ov/data:rw \
   -v /home/ubuntu/docker/isaac-sim/pkg:/isaac-sim/.local/share/ov/pkg:rw \
   -v /home/ubuntu/.cache/ov/hub:/var/cache/hub:rw \
-  -v /home/ubuntu/jude/xpanner-sim:/workspace/xpanner-sim:rw \
+  -v /home/ubuntu/jude/xpanner-sim:/work/xpanner-sim:rw \
   -u 1234:1234 \
   nvcr.io/nvidia/isaac-sim:6.0.1 -v
 ```
@@ -172,8 +175,9 @@ docker run -d --name isaac-sim-jude --gpus all --network=host \
 * 마운트 경로는 이 머신의 실제 디렉토리다. `cache/main`, `cache/computecache`, `config`, `data`,
   `logs`, `pkg` 는 이미 uid 1234 소유라 `chown` 불필요.
   (`cache/{glcache,kit,ov,pip}` 는 4.x 시절 잔재로 root 소유이지만 6.0 은 안 쓴다. 건드리지 말 것.)
-* `-v /home/ubuntu/jude/xpanner-sim:/workspace/xpanner-sim:rw` 로 프로젝트 레포가 컨테이너 안
-  `/workspace/xpanner-sim` 에 보인다. GUI 의 File > Open 에서 이 경로를 쓴다.
+* `-v /home/ubuntu/jude/xpanner-sim:/work/xpanner-sim:rw` 로 프로젝트 레포가 컨테이너 안
+  `/work/xpanner-sim` 에 보인다. GUI 의 File > Open 에서 이 경로를 쓴다.
+  (`run_isaac.sh` 도 같은 `/work/<레포이름>` 으로 마운트한다. 예전 판의 `/workspace/...` 는 틀린 경로였다.)
 
 **로딩 대기** (이 서버에서 warm cache 기준 **약 50초** 걸렸다):
 
@@ -262,7 +266,7 @@ sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
 1. 서버 로그에 `Isaac Sim Full Streaming App is loaded.` 가 뜬 걸 먼저 확인한다.
 2. 클라이언트를 실행하면 주소 칸에 기본값 `127.0.0.1` 이 들어 있다. 이걸 지우고
-   **`3.37.123.120`** (= §3.0.2 의 `$PUBLIC_IP`) 를 넣는다. `http://` 도, `:49100` 도 붙이지 않는다. **IP 만.**
+   **§3.0.2 의 `$PUBLIC_IP`** (09-14 기준 `3.37.129.139`) 를 넣는다. `http://` 도, `:49100` 도 붙이지 않는다. **IP 만.**
 3. Connect.
 
 동시 접속은 **한 명만** 가능하다(인스턴스당 클라이언트 1개). 둘째 사람은 붙지 않는다.
@@ -288,7 +292,7 @@ not sufficient for WebRTC media."*
 
 ```bash
 # 노트북에서
-ssh -L 49100:127.0.0.1:49100 ubuntu@3.37.123.120
+ssh -L 49100:127.0.0.1:49100 ubuntu@<PUBLIC_IP>
 ```
 
 이렇게 하면 클라이언트에 `127.0.0.1` 을 넣고 **연결은 된다**. 그리고 **화면은 영원히 검다.**
@@ -350,130 +354,80 @@ NVIDIA 가 AWS 배포 문서에서 공식적으로 제시하는 유일한 원격
 
 ## 6. ECR88 asset 실제로 띄워보기
 
-### 6.0 먼저 알아야 할 두 가지 (README 와 다름)
+> **2026-09-14 에 전면 갱신.** 예전 판은 지금은 없는 `scripts/urdf_to_usd_isaac60.py` 와
+> `assets/ecr88/usd/ecr88/ecr88.usda` 출력 경로를 가리켰다. 아래는 현재 레포에서 반복해서 쓰고 있는 절차다.
 
-* **README 의 `cd ~/isaacsim && ./python.sh ...` 는 이 서버에서 동작하지 않는다.**
-  호스트에 native Isaac Sim 도 `python.sh` 도 없다. 전부 컨테이너 안에서 돌려야 한다.
-* **`scripts/urdf_to_usd.py` 는 6.0.1 에서 이런 식으로 실패했었다**:
+### 6.0 먼저 알아야 할 것
 
-  ```
-  ImportError: cannot import name '_urdf' from 'isaacsim.asset.importer.urdf'
-  ```
-
-  6.0 의 importer(`isaacsim.asset.importer.urdf-3.11.2`)는 `_urdf` / `ImportConfig` /
-  `URDFParseAndImportFile` 커맨드를 버리고 `URDFImporter` + `URDFImporterConfig` 데이터클래스 API 로 바뀌었다.
-  당시 대응으로 6.0 전용 스크립트 **`scripts/urdf_to_usd_isaac60.py`** 를 따로 뒀다(§6.3 에서 사용).
-
-  **⚠️ UNVERIFIED — 그 뒤 `urdf_to_usd.py` 자체가 6.0.1 을 1순위 타깃으로 다시 작성됐다.**
-  현재 파일의 헤더는 6.0 의 `URDFImporter` / `URDFImporterConfig` API 로 작성했고 이 머신의 6.0.1
-  이미지에 대해 검증했다고 적고 있으며, `run_isaac.sh convert` 도 (구버전이 아니라) 이 파일을 부른다.
-  **이 문서를 쓰면서 그 재작성본을 다시 돌려보지는 않았다.** 위의 `ImportError` 는 재작성 이전 상태의 기록이다.
-  둘 중 무엇을 쓸지 확실히 하려면 한 번 돌려보고 이 항목을 갱신할 것 (§8 #13).
+* **호스트에는 Isaac Sim 도 `python.sh` 도 없다.** Isaac 쪽 스크립트는 전부 컨테이너 안에서 돈다.
+  반대로 **`xacro` 는 컨테이너에 없고 호스트에만 있다.** 그래서 순서가 늘 "호스트에서 xacro → 컨테이너에서 변환" 이다.
+* `scripts/urdf_to_usd.py` 는 6.0.1 의 `URDFImporter` / `URDFImporterConfig` API 로 작성돼 있고
+  **이 서버에서 반복 검증됐다** (2026-09-11 ~ 09-14, 매 URDF 변경마다). 옛 `ImportError: cannot import name '_urdf'`
+  는 재작성 이전의 기록이다.
+* 이미 떠 있는 스트리밍 컨테이너(`isaac-sim-jude`)가 있으면 **`docker exec` 로 그 안에서 돌린다.**
+  컨테이너를 하나 더 띄우면 GPU 를 두 번 잡는다.
 
 ### 6.1 호스트에서 xacro → flat URDF
 
-컨테이너 안에는 `xacro` 가 **없다**(확인함). 호스트에는 `/home/ubuntu/.local/bin/xacro` 로 있다.
-
 ```bash
 cd /home/ubuntu/jude/xpanner-sim
-mkdir -p build
 xacro assets/ecr88/urdf/ecr88.urdf.xacro -o build/ecr88.urdf
+xacro assets/ecr88/urdf/ecr88.urdf.xacro model_cylinders:=false -o build/ecr88_nocyl.urdf   # 물리용
 
-# 검증도 겸해서 (Isaac Sim 없이 stdlib 로 돈다)
-python3 scripts/validate_urdf.py --urdf build/ecr88.urdf
+# 검증 (Isaac Sim 없이 stdlib + numpy)
+python3 scripts/validate_urdf.py --xacro assets/ecr88/urdf/ecr88.urdf.xacro --variant ECR88_US1_2P1M
 ```
 
 ### 6.2 출력 디렉토리 권한
 
-컨테이너는 uid **1234** 로 돌고 레포는 `ubuntu`(uid 1000) 소유라, 그대로는 USD 를 못 쓴다.
-출력 디렉토리만 열어 준다(최초 1회):
+컨테이너는 uid **1234**, 레포는 `ubuntu`(uid 1000) 소유다. 출력 디렉토리만 열려 있으면 된다(이미 열려 있음):
 
 ```bash
-mkdir -p /home/ubuntu/jude/xpanner-sim/assets/ecr88/usd
-chmod 777 /home/ubuntu/jude/xpanner-sim/assets/ecr88/usd
+chmod 777 assets/ecr88/usd assets/site
 ```
 
-### 6.3 URDF → USD 변환 (컨테이너, headless)
-
-스트리밍 컨테이너와 별개로 잠깐 띄웠다 지우는 일회성 컨테이너다. **이 서버에서 실제로 성공을 확인했다.**
-
-> 가드가 붙은 동등물은 `./scripts/run_isaac.sh convert --xacro ... --output ...` 이다.
-> 다만 래퍼는 `urdf_to_usd.py` 를 부르고, 아래 명령은 `urdf_to_usd_isaac60.py` 를 부른다 — §6.0 의 UNVERIFIED 참고.
-> 아래처럼 손으로 `docker run` 을 칠 때는 §2 의 확인을 **직접** 해야 한다. `--gpus all` 은 공용 L4 를 건드린다.
+### 6.3 URDF → USD, 현장 씬, 물리 확인 (컨테이너 안)
 
 ```bash
-docker run --rm --gpus all \
-  -e "ACCEPT_EULA=Y" -e "PRIVACY_CONSENT=Y" \
-  -v /home/ubuntu/docker/isaac-sim/cache/main:/isaac-sim/.cache:rw \
-  -v /home/ubuntu/docker/isaac-sim/cache/computecache:/isaac-sim/.nv/ComputeCache:rw \
-  -v /home/ubuntu/docker/isaac-sim/logs:/isaac-sim/.nvidia-omniverse/logs:rw \
-  -v /home/ubuntu/docker/isaac-sim/config:/isaac-sim/.nvidia-omniverse/config:rw \
-  -v /home/ubuntu/docker/isaac-sim/data:/isaac-sim/.local/share/ov/data:rw \
-  -v /home/ubuntu/jude/xpanner-sim:/workspace/xpanner-sim:rw \
-  -u 1234:1234 --entrypoint /isaac-sim/python.sh \
-  nvcr.io/nvidia/isaac-sim:6.0.1 \
-  /workspace/xpanner-sim/scripts/urdf_to_usd_isaac60.py \
-    --urdf    /workspace/xpanner-sim/build/ecr88.urdf \
-    --out-dir /workspace/xpanner-sim/assets/ecr88/usd
+C=isaac-sim-jude
+RP="--rest-pose boom_joint=-30 --rest-pose arm_joint=110 --rest-pose bucket_joint=20"
+W=/work/xpanner-sim
+
+docker exec $C /isaac-sim/python.sh $W/scripts/urdf_to_usd.py \
+    --urdf $W/build/ecr88.urdf       --output $W/assets/ecr88/usd/ecr88.usd $RP
+docker exec $C /isaac-sim/python.sh $W/scripts/urdf_to_usd.py \
+    --urdf $W/build/ecr88_nocyl.urdf --output $W/assets/ecr88/usd/ecr88_physics.usd $RP
+
+# 현장 씬: 순서가 중요하다 (site 가 robot 을 참조하고, 뒤 두 개가 site 를 덮어쓴다)
+rm -f assets/site/solar_site.usd
+docker exec $C /isaac-sim/python.sh $W/scripts/build_site.py    --robot $W/assets/ecr88/usd/ecr88.usd --output $W/assets/site/solar_site.usd
+docker exec $C /isaac-sim/python.sh $W/scripts/animate_cycle.py --stage $W/assets/site/solar_site.usd
+docker exec $C /isaac-sim/python.sh $W/scripts/add_cameras.py   --stage $W/assets/site/solar_site.usd
+
+# 물리 안정성 (관절마다 수렴 여부)
+docker exec $C /isaac-sim/python.sh $W/scripts/check_stability.py $W/assets/ecr88/usd/ecr88_physics.usd
 ```
 
-**⚠️ 종료 코드는 무시하고 로그의 `[ok]` 줄을 본다.** 이 컨테이너는 변환을 끝낸 뒤
-`simulation_app.close()` 에서 Isaac Sim 자체 버그로 abort 한다
-(`carb::tasking::TaskGroup::~TaskGroup(): Assertion (empty()) failed: Destroying busy TaskGroup!`,
-exit code 1). **파일은 이미 정상적으로 쓰였다.** 성공 판정은 이 줄로 한다:
+**⚠️ 변환의 종료 코드 1 은 무시해도 되는 경우가 있다.** 변환을 끝낸 뒤 `simulation_app.close()` 에서
+Isaac Sim 자체가 `carb::tasking::TaskGroup::~TaskGroup(): Destroying busy TaskGroup!` 로 abort 할 때가 있다
+(09-14 에도 재현). 로그에 `[usd] PhysicsFixedJoint ...` 요약이 다 찍힌 뒤라면 **파일은 정상**이다.
+확실히 하려면 USD 를 열어 관절 수와 `physxJoint:maxJointVelocity` 를 확인한다.
 
-```
-[ok] USD written: /workspace/xpanner-sim/assets/ecr88/usd/ecr88/ecr88.usda
-```
-
-출력 구조(검증됨):
-
-```
-assets/ecr88/usd/ecr88/
-├── ecr88.usda              <- 이걸 GUI 에서 연다
-├── Textures/
-└── payloads/{base,robot,materials}.usda, Physics/{physics,physx,mujoco}.usda
-```
-
-* importer 가 **디렉토리와 파일 이름을 URDF 의 `<robot name>` 에서 정한다.** `--out-dir` 는 디렉토리다.
-  같은 이름 디렉토리가 이미 있으면 덮어쓰지 않고 `ecr88_01` 로 새로 만든다 → **재변환 전에 지울 것**:
-  `rm -rf /home/ubuntu/jude/xpanner-sim/assets/ecr88/usd/ecr88`
-* `merge_fixed_joints` 는 **기본 OFF** 다(의도된 것). 켜면 `gnss_*_link`, 실린더 앵커,
-  `probe_link`, `contact_surface_link`(TCP) 가 사라진다.
-  실제로 OFF 상태에서 `contact_surface_link`, `gnss_main_link`, `gnss_aux_link`, `cyl_*_link` 가
-  전부 USD 에 남아 있는 것을 확인했다.
-* `PhysicsArticulationRootAPI` 가 적용된 것도 확인했다.
-* 결과물은 uid 1234 소유가 된다. 호스트에서 지우려면 `sudo rm -rf` 가 필요할 수 있다.
-
-유용한 옵션:
-
-```bash
-  --floating              # fixed base 대신 floating base
-  --merge-fixed-joints    # 프레임 날아감. 성능 빌드 전용
-  --target-type none      # joint drive target 안 건드림 (기본 position)
-  --stiffness 1e7 --damping 1e5
-```
+기대값 (09-14): `check_stability.py` 가 **10 개 관절** 을 보고 `미수렴 0개 / 10`.
+`merge_fixed_joints` 는 기본 OFF — 켜면 `contact_surface_link`, `gnss_*_link`, IMU·카메라 마운트 프레임이 사라진다.
 
 ### 6.4 GUI 에서 열기
 
-1. §3 으로 스트리밍 컨테이너를 띄운다 (레포 마운트 `-v /home/ubuntu/jude/xpanner-sim:/workspace/xpanner-sim:rw` 포함 — 위 명령에 이미 들어 있다).
-2. 노트북 클라이언트로 `3.37.123.120` 접속.
-3. GUI 에서 **File ▸ Open…** → 경로에 다음을 입력:
+1. §3 으로 스트리밍 컨테이너를 띄운다 (래퍼든 수동이든 레포는 `/work/xpanner-sim` 에 마운트된다).
+2. 노트북 클라이언트로 **§3.0.2 의 `$PUBLIC_IP`** 에 접속.
+3. **File ▸ Open…** (`Ctrl+O`) → 컨테이너 안 경로:
 
    ```
-   /workspace/xpanner-sim/assets/ecr88/usd/ecr88/ecr88.usda
+   /work/xpanner-sim/assets/site/solar_site.usd      # 현장 + 장비 + 카메라 + 작업 사이클
+   /work/xpanner-sim/assets/ecr88/usd/ecr88.usd      # 장비만
    ```
 
-   (호스트 경로 `/home/ubuntu/jude/...` 가 아니라 **컨테이너 안 경로**다. 컨테이너 안에서
-   이 파일이 보이는 것을 `docker exec` 로 확인했다.)
-4. 확인 순서:
-   * **Window ▸ Simulation ▸ Articulation Inspector** — DOF 수 확인. 기대값은 revolute 7개
-     (`use_meshes:=false`, 4절 분기 포함 빌드 기준. **정확한 DOF 수는 GUI 에서 직접 확인할 것 — §8**).
-   * Stage 트리에서 `contact_surface_link`, `gnss_main_link` 가 살아 있는지 확인
-     (merge_fixed_joints 가 꺼졌다는 증거).
-   * 조인트를 하나씩 수동으로 움직여 링크 분리·자기충돌이 없는지 본다.
-   * ▶ Play 를 누르면 물리가 돈다. **질량·관성·joint limit 은 전부 추정치**(README 의 신뢰도 태그 참조)이므로
-     장비가 이상하게 주저앉거나 튀어도 asset 파이프라인 문제가 아니라 **입력 수치 문제**다.
+4. 조작법·카메라·사이클 재생은 노션 "📋 시뮬레이션 tool" 페이지에 정리돼 있다.
 
 ---
 
@@ -580,19 +534,20 @@ livestream failures"* 라고 경고한다. **최후의 수단**(셰이더 캐시
 | `ECC is enabled on physical device 0` | 무해. L4 특성 |
 | `PCIe link width current (8) and maximum (16) don't match` | 무해(대역폭 절반이지만 동작함) |
 | `pxr.Semantics is deprecated` | 무해 |
-| `Destroying busy TaskGroup!` + exit 1 (**변환 스크립트 종료 시에만**) | 무해. `[ok] USD written` 이 찍혔으면 성공 |
+| `Destroying busy TaskGroup!` + exit 1 (**변환 스크립트 종료 시에만**) | 무해. `[usd] ...` 요약이 다 찍힌 뒤라면 파일은 정상 (§6.3) |
 
 ### ImportError: cannot import name '_urdf'
 
 4.5/5.x 시절의 importer API 를 6.0.1 에서 불렀다는 뜻이다.
-`scripts/urdf_to_usd.py` 는 그 뒤 6.0.1 용으로 재작성됐지만 **재검증은 아직**이다(§6.0, §8 #13).
-이 오류가 나면 확실히 성공을 확인한 `scripts/urdf_to_usd_isaac60.py` 로 돌린다(§6.3).
+현재 `scripts/urdf_to_usd.py` 는 6.0.1 API 로 재작성돼 반복 검증됐다(§6.3). 이 오류가 다시 나면
+**다른 태그의 이미지(`:latest` = 6.1.0 등)** 를 쓰고 있지 않은지부터 확인한다(§8 #10).
 
 ---
 
 ## 8. 확실하지 않은 것 (숨기지 않고 모아 둠)
 
-1. **노트북 네트워크가 인바운드 UDP 47998 을 실제로 통과시키는지 검증 못 했다.**
+1. ~~노트북 네트워크가 인바운드 UDP 47998 을 실제로 통과시키는지 검증 못 했다.~~ **해결 (09-11): 사용자 노트북에서 WebRTC 화면 수신 확인.**
+   (아래는 다른 사람 노트북에서 막힐 때를 위해 남겨 둔다.)
    서버 쪽(TCP 49100 LISTEN, 앱 로드, NVENC 존재)은 전부 확인했지만 노트북이 없어 핸드셰이크를 못 돌렸다.
    "연결됨 + 검은 화면"이 나오면 설정이 아니라 **UDP 경로**를 의심할 것.
 2. **이 인스턴스의 security group ID 와 현재 인바운드 규칙을 확인하지 못했다.**
@@ -613,7 +568,7 @@ livestream failures"* 라고 경고한다. **최후의 수단**(셰이더 캐시
    보다 높고 6.0.1 요구사항의 테스트 드라이버(595.58.03)와 같은 브랜치지만, NVIDIA 는
    *"The latest NVIDIA drivers may not be fully supported for some features like livestreaming"* 라는
    단서를 달아 두었다.
-8. **USD 의 DOF 수를 GUI 에서 직접 세어보지 못했다.** 변환 성공과 링크·articulation root 존재는 확인했지만
+8. ~~USD 의 DOF 수를 GUI 에서 직접 세어보지 못했다.~~ **해결: `check_stability.py` 가 articulation API 로 10 개 관절을 확인** (GUI 대신). 아래 "revolute 7개" 는 도저·붐스윙 관절 추가 전 수치다. 변환 성공과 링크·articulation root 존재는 확인했지만
    Articulation Inspector 는 GUI 가 필요하다. URDF 검증기 기준 revolute 7개가 기대값이다.
 9. **`impl/_urdf.py` 호환 shim** 이 6.0.1 에 남아 있어 `from ...urdf.impl import _urdf` 로
    기존 스크립트를 살릴 수 있을지도 모르나, 그 shim 은 클래스 형태이고 API 시그니처가 달라
@@ -626,7 +581,7 @@ livestream failures"* 라고 경고한다. **최후의 수단**(셰이더 캐시
     설정(예: 고정된 publicIp, Nucleus 서버)이 남아 있을 가능성은 배제하지 못했다.
 12. 4.x 잔재인 `cache/{glcache,kit,ov,pip}` (root 소유, 8월 11일자)는 6.0 이 **쓰지 않으므로** 그대로 뒀다.
     지우는 게 안전하다고 보지만 **공용 디렉토리라 건드리지 않았다.**
-13. **`scripts/urdf_to_usd.py` 의 6.0.1 재작성본을 실제로 돌려보지 않았다** (§6.0).
+13. ~~`scripts/urdf_to_usd.py` 의 6.0.1 재작성본을 실제로 돌려보지 않았다~~ **해결: 09-11 ~ 09-14 반복 사용, §6.3 이 그 절차다.** 아래 원문은 기록용.
     `run_isaac.sh convert` 가 부르는 건 이 파일이다. 성공/실패를 확인한 뒤 §6.0 과 §7 의
     `ImportError` 항목을 갱신할 것. 그때까지는 §6.3 의 `urdf_to_usd_isaac60.py` 경로가
     **실제로 성공을 확인한** 유일한 경로다.

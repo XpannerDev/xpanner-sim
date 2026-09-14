@@ -89,6 +89,10 @@
        estimated masses + estimated box dims. Replace with real tensors from
        the CAD model. Slide-2 row 30 of the calibration deck lists
        "CalibInertialTensor ... (TBD)" — upstream has not measured it either.
+       (2026-09-14: the firmware has no step 30 and no CalibInertialTensor at all;
+       the nearest thing, CalibSwingStopCoeff = 32, is unreachable - no state in
+       AutoStsMgr/Chart, and its calculation is dead-code-eliminated. The conclusion
+       stands: nobody upstream has identified inertia.)
    T6  Boundary box HEIGHTS (LenBottomZ_est, LenUppZ_est) — section [9].
        The sheet gives box ORIGINS and X/Y sizes but no Z size. Derived, see
        inline assumption.
@@ -386,9 +390,14 @@
        row that does not get revised when hardware moves. The firmware value is what the
        machine's position solution is actually computed with, so for SIL it is the one
        that has to be here.
-       WORTH RAISING WITH OLIVIA: 71 mm is larger than the firmware's own placement
-       tolerance (releaseHgt = 20 mm, releaseEasting/Northing = 20 mm), so whichever
-       number is stale, somebody is placing panels against a shifted reference.
+       WORTH RAISING WITH OLIVIA. An earlier revision argued "71 mm is larger than the
+       firmware's own placement tolerance (releaseHgt = 20 mm)". That yardstick is void:
+       the Tol_t struct holding releaseHgt has ZERO references in the generated
+       MdlApp.c - it is declared, never enforced. The difference matters anyway, and
+       more directly: links.chs.p = mainAntenna + R_chs * distAntMainToChs is the ONLY
+       offset joining the GNSS fix to the kinematic chain, so 71 mm lands in every tool
+       position the firmware computes. The gates that ARE enforced are 1.0 deg per joint
+       and 0.20 m lateral on the undercarriage (resources/X1Exc_SIL_spec.md A6).
        Note LenUpZ_est below is derived from this, so the cab roof estimate moves with it. -->
   <xacro:property name="distAntMainToChsZ"     value="-1.345"/> <!-- OEM-FIRMWARE  (sheet: -1.416) -->
 
@@ -605,7 +614,9 @@
            lengths. Its only angle, angTiltMntToTilt = +1.736 deg, is a
            mounting offset.
          * The calibration deck's only angles are procedural gates
-           ("Roll = 0 deg", "Pitch > 5 deg", "Swing 180 -> 90").
+           ("Roll = 0 deg", "Pitch > 5 deg", "Swing 180 -> 90"). The firmware
+           actually uses 170 -> 80 deg (SysPar.m AngChsPnt1/2) and does not check
+           roll/pitch at all. None of it bounds a joint.
        The one real limit we hold is angForkUpLimit, in section [10].
 
        Values below are typical-for-class figures for an 8.5 t short-swing
