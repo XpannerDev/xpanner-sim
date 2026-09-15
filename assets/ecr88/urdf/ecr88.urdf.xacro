@@ -1175,55 +1175,122 @@
        goes into the TABLET's kinematic dataset, not what the machine physically
        has; the fork is drawn here as geometry and drives nothing.
 
-       Pallet base tilts by AlphaPL2 (15.7 deg) and the backrest by AlphaPL1
-       (74.5 deg), both straight from the sheet's protractor readings, so the stack
-       leans back the way it does on the real carriage.
+       GEOMETRY IS THE FIRMWARE'S (rebuilt 2026-09-14). The X1Exc kinematics define the
+       carriage entirely through three frames (MdlApp.c:12754-12949):
+           uc        = chassis (+) Rz(swing)                      zero offset
+           forkBack  = uc (+) Ry(angForkUpLimit) (+) distUcToForkBack
+           panelTop  = forkBack (+) Ry(pi/2) (+) distForkBackToPanelTop (along the blade)
+           approach  = panelTop (+) [0, 0, TarPanelPickupMargin]
+           liftPosn  = panelTop (+) distPanelTopToLiftPosn
+       and they are emitted below under exactly those names, so a SIL comparator can put
+       Isaac ground truth next to MdlApp_Y.objects/links frame for frame.
+
+       WHAT THAT MEANS PHYSICALLY. The pallet base is tilted tip-up by angForkUpLimit
+       (sheet AlphaPL2 = 15.7 deg agrees), the backrest is square to it (AlphaPL1 +
+       AlphaPL2 = 90.2 deg), and the modules STAND on the base leaning on the backrest.
+       The stack's "top" is its outermost face, 1.0165 m out along the blade; the tool
+       meets it face-on with contact_surface Z along the blade, approaching back toward
+       the machine (dirRef = -panelTopWithMargin.R(:,3), MdlApp.c:6760). forkBack's
+       origin is where CalibForkRefPose found the cups against the bare backrest, so it
+       sits at cup height, not at the pallet corner.
+
+       WHAT THIS REPLACED. The carriage used to be placed from the `old` sheet's LenPL*
+       rows with an assumed X (LenPLX taken literally put it inside the house), and the
+       modules were drawn LYING FLAT on the pallet with the tool expected to come down
+       on them from above. Two consequences surfaced when the firmware frames were
+       checked: no pose in the joint limits could put the tool face-down on that flat
+       stack, and the camera study was scoring a "pick" point the work cycle never
+       visited. The LenPL* rows stay in the params file for reference only.
+
+       STILL ASSUMED (flagged, not hidden): the stack's vertical extent is the sheet's
+       LenPanelHeight centred on cup height, its width is LenPLWidth, and the 2.1 m
+       build borrows the 1.7 m unit's calibrated carriage (the LongArm parameter file is
+       on the old schema and has no distUcToForkBack).
        ===================================================================== -->
   <xacro:if value="$(arg model_fork)">
+    <xacro:property name="stack_depth" value="${panels_per_stack * geo_panel_t}"/>
+
+    <!-- forkBack: firmware frame, zero mass. -->
+    <link name="fork_back_link">
+      <xacro:inertial_sphere mass="${m_marker}" radius="${geo_marker_r}"/>
+      <xacro:detail_visual material="xpanner_accent"><sphere radius="${geo_marker_r}"/></xacro:detail_visual>
+    </link>
+    <joint name="fork_back_joint" type="fixed">
+      <parent link="base_link"/>
+      <child  link="fork_back_link"/>
+      <origin xyz="${distUcToForkBackX} ${distUcToForkBackY} ${distUcToForkBackZ}"
+              rpy="0 ${angForkUpLimit} 0"/>
+    </joint>
+
+    <!-- Carriage: pallet base along forkBack +X, backrest along +Z, square to each other.
+         Its origin is the base/backrest corner, stack_bottom below cup height. -->
     <link name="fork_link">
       <xacro:inertial_box mass="${m_fork}"
                           x="${geo_fork_len}" y="${LenPLWidth}" z="${geo_fork_t}"
-                          xyz="${geo_fork_len * half} 0 0"/>
-      <!-- pallet base, tilted back by AlphaPL2 -->
+                          xyz="${geo_fork_len * half} 0 ${-geo_fork_t * half}"/>
       <xacro:viscol name="fork_link" material="xpanner_dark"
-                    xyz="${geo_fork_len * half} 0 0" rpy="0 ${-AlphaPL2} 0">
+                    xyz="${geo_fork_len * half} 0 ${-geo_fork_t * half}">
         <box size="${geo_fork_len} ${LenPLWidth} ${geo_fork_t}"/>
       </xacro:viscol>
-      <!-- backrest the stack leans on, tilted by AlphaPL1 -->
       <xacro:detail material="xpanner_dark"
-                    xyz="0 0 ${geo_fork_back_h * half}" rpy="0 ${half_pi - AlphaPL1} 0">
-        <box size="${geo_fork_back_h} ${LenPLWidth} ${geo_fork_t}"/>
+                    xyz="${-geo_fork_t * half} 0 ${geo_fork_back_h * half}">
+        <box size="${geo_fork_t} ${LenPLWidth} ${geo_fork_back_h}"/>
       </xacro:detail>
     </link>
     <joint name="fork_joint" type="fixed">
-      <parent link="base_link"/>
+      <parent link="fork_back_link"/>
       <child  link="fork_link"/>
-      <!-- X IS NOT LenPLX. Taken literally, LenPLX = 1.086 puts the carriage inside
-           the machine: the house box reaches x = +1.14 and the undercarriage +1.41,
-           so a 1.25 m mast at x = 1.086 rises straight through the house. It showed up
-           as cam_fork_mast being occluded by house_link on every pose of the cycle.
-           LenPLX is evidently measured to some other fork reference, not to the
-           carriage root. Until that is pinned down, the carriage is placed clear of
-           the undercarriage front, which is where a forklift carriage physically is.
-           Y and Z ARE the sheet's (LenPLY, LenPLZ); only X is overridden. -->
-      <origin xyz="${lenBottomX * half + geo_fork_clear} ${LenPLY} ${LenPLZ}" rpy="0 0 0"/>
+      <origin xyz="0 0 ${-LenPanelHeight * half}" rpy="0 0 0"/>
     </joint>
 
-    <!-- The stack itself. Modules lie flat on the tilted pallet, one on top of the
-         next; the tool takes them off the top. Count is a scene choice, not data. -->
+    <!-- The stack: a full load of panels_per_stack modules standing on the base. The
+         firmware has no stack model - it commands the same fork-relative panelTop every
+         cycle and relies on the all-four-cups contact to stop the approach - so the
+         OUTER FACE is what has to be right, and it is drawn at panelTop. -->
     <link name="panel_stack_link">
-      <xacro:inertial_box mass="${m_panel * n_panels}"
-                          x="${LenPanelHeight}" y="${LenPLWidth}" z="${n_panels * geo_panel_t}"
-                          xyz="0 0 ${n_panels * geo_panel_t * half}"/>
+      <xacro:inertial_box mass="${m_panel * panels_per_stack}"
+                          x="${stack_depth}" y="${LenPLWidth}" z="${LenPanelHeight}"
+                          xyz="${distForkBackToPanelTopX - stack_depth * half} 0 0"/>
       <xacro:viscol name="panel_stack_link" material="xpanner_panel"
-                    xyz="0 0 ${n_panels * geo_panel_t * half}">
-        <box size="${LenPanelHeight} ${LenPLWidth} ${n_panels * geo_panel_t}"/>
+                    xyz="${distForkBackToPanelTopX - stack_depth * half} 0 0">
+        <box size="${stack_depth} ${LenPLWidth} ${LenPanelHeight}"/>
       </xacro:viscol>
     </link>
     <joint name="panel_stack_joint" type="fixed">
-      <parent link="fork_link"/>
+      <parent link="fork_back_link"/>
       <child  link="panel_stack_link"/>
-      <origin xyz="${geo_fork_len * half} 0 ${geo_fork_t * half}" rpy="0 ${-AlphaPL2} 0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+
+    <!-- panelTop: the firmware's pick frame. contact_surface must reach this pose. -->
+    <link name="panel_top_link">
+      <xacro:inertial_sphere mass="${m_marker}" radius="${geo_marker_r}"/>
+    </link>
+    <joint name="panel_top_joint" type="fixed">
+      <parent link="fork_back_link"/>
+      <child  link="panel_top_link"/>
+      <origin xyz="${distForkBackToPanelTopX} ${distForkBackToPanelTopY} ${distForkBackToPanelTopZ}"
+              rpy="0 ${half_pi} 0"/>
+    </joint>
+
+    <!-- panelTopWithMargin: where ApproachPanel starts. -->
+    <link name="panel_pick_approach_link">
+      <xacro:inertial_sphere mass="${m_marker}" radius="${geo_marker_r}"/>
+    </link>
+    <joint name="panel_pick_approach_joint" type="fixed">
+      <parent link="panel_top_link"/>
+      <child  link="panel_pick_approach_link"/>
+      <origin xyz="0 0 ${TarPanelPickupMargin}" rpy="0 0 0"/>
+    </joint>
+
+    <!-- panelLiftPosn: the Placing/Lift target (variant specific). -->
+    <link name="panel_lift_posn_link">
+      <xacro:inertial_sphere mass="${m_marker}" radius="${geo_marker_r}"/>
+    </link>
+    <joint name="panel_lift_posn_joint" type="fixed">
+      <parent link="panel_top_link"/>
+      <child  link="panel_lift_posn_link"/>
+      <origin xyz="${distPanelTopToLiftPosnX} 0 ${distPanelTopToLiftPosnZ}" rpy="0 0 0"/>
     </joint>
   </xacro:if>
 

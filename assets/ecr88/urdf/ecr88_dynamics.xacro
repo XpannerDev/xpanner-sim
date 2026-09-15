@@ -160,10 +160,27 @@
        lives in exactly one place.
          jntBm1Lower/Upper in params compute the same thing; they are the same two
          numbers by construction and are now unused aliases. -->
-  <xacro:property name="lim_boom_lower"   value="${deg * (bm1GroundContactUrdf - oemBm1AngleSpan)}"/>
-                                      <!-- OEM-TEAM span + DERIVED placement [L42]  boom fully UP. -->
-  <xacro:property name="lim_boom_upper"   value="${deg * bm1GroundContactUrdf}"/>
-                                      <!-- OEM-TEAM span + DERIVED placement [L42]  boom DOWN, TCP at ground. -->
+  <!-- 2026-09-14: SUPERSEDED. Olivia's numbers are now used LITERALLY, boom -69..-31 and
+       arm 31..155 deg, because the chain from firmware joint angle to the tablet she
+       reads them from has been traced end to end and it has no offset:
+           MdlApp_Y.jnts.BmMntToBm1.q [rad]      X1Exc AppCtrlIf.c:723
+             x RAD_TO_DEG, nothing added          PrePostProc_If.c:1810
+             -> CAN2 JntAngBodyToBoom [deg] -> HMI OutpHndlr.c:122, CAN2_X1Exc.dbc:224
+       (same for Bm2ToArm -> JntAngBoom2ToArm, and ArmToOutpLink -> JntAngArmToBucket),
+       and the SIL suite showed the firmware's joint angles have the SAME zero and sign
+       as this URDF's boom_joint / arm_joint / bucket_joint (sil/tests/
+       test_imu_kinematics.py, published poses reproduced to 0.002 deg). The bucket
+       limit was already taken literally; boom and arm were not, which was inconsistent.
+       Independent support: the firmware's own arm-cylinder geometry has a dead centre at
+       q = +5.6 deg, so the old arm range 0..124 started in a pose the hydraulics cannot
+       drive through, while 31..155 lies entirely on the valid side; and with these limits
+       the tool reaches the firmware's panelTop pick frame (0.2 mm), which the old limits
+       could not do for the flat-stack geometry. Remaining assumption: that Olivia read the
+       values off the tablet. The bisection anchor below is kept for the record only. -->
+  <xacro:property name="lim_boom_lower"   value="${deg * -69.00}"/>
+                                      <!-- OEM-TEAM literal, firmware convention verified [L42]  boom fully UP. -->
+  <xacro:property name="lim_boom_upper"   value="${deg * -31.00}"/>
+                                      <!-- OEM-TEAM literal, firmware convention verified [L42]  boom DOWN ("붐다운 바닥기준"). -->
 
   <!-- BOOM, MECHANICAL envelope. Needed for trenching; the PanelLift range above cannot
        dig at all (38 deg of boom never reaches below ground, and the published 4 130 mm
@@ -198,8 +215,13 @@
            stroke ratio, still argues against Olivia's literal placement.
        So the span is kept and the out stop is ASSUMED at collinear, on the standard
        layout plus ref_arm_deadcentre. NOTE H3 on the sign and H5 on the tag. -->
-  <xacro:property name="lim_arm_lower"    value="${deg *   0.00}"/>   <!-- ASSUMPTION [L44], was DERIVED until the H residual was withdrawn (H5)  arm fully OUT, collinear with the boom. NO published figure discriminates this placement. Standing support: it is the standard layout, and the arm cylinder is within 5.6 deg of dead centre here (moment arm 72 mm), so a STRUCTURAL stop belongs about there: prefer a SOFT joint limit. If the true out stop is -10 deg instead, ref_bucket_radius becomes 0.802 and lim_boom_mech_lower becomes -66.56 deg. Teo's cylinder strokes settle it. -->
-  <xacro:property name="lim_arm_upper"    value="${deg * 124.00}"/>   <!-- OEM-TEAM span [L43]  arm fully IN (interior angle 56 deg). -->
+  <!-- 2026-09-14: SUPERSEDED by the literal 31..155, see the boom block above. The
+       stroke-ratio objection (a) does not survive the firmware cylinder geometry: arm
+       stroke 1.395 -> 2.327 m over 31..155 is an extended/retracted ratio of 1.67,
+       buildable; and the old 0 lower bound sits past the +5.6 deg dead centre. -->
+  <xacro:property name="lim_arm_lower_superseded" value="${deg *   0.00}"/>   <!-- ASSUMPTION [L44], was DERIVED until the H residual was withdrawn (H5)  arm fully OUT, collinear with the boom. NO published figure discriminates this placement. Standing support: it is the standard layout, and the arm cylinder is within 5.6 deg of dead centre here (moment arm 72 mm), so a STRUCTURAL stop belongs about there: prefer a SOFT joint limit. If the true out stop is -10 deg instead, ref_bucket_radius becomes 0.802 and lim_boom_mech_lower becomes -66.56 deg. Teo's cylinder strokes settle it. -->
+  <xacro:property name="lim_arm_lower"    value="${deg *  31.00}"/>   <!-- OEM-TEAM literal "31(암아웃)", firmware convention verified [L43] -->
+  <xacro:property name="lim_arm_upper"    value="${deg * 155.00}"/>   <!-- OEM-TEAM literal "155(암인)", firmware convention verified [L43] -->
 
   <!-- 2026-09-11 UPDATE, Olivia (Slack #simulation, 11:28 KST). The original relay of her
        figures carried no direction words; the full message does:

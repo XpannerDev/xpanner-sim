@@ -158,14 +158,7 @@ def main(argv=None) -> int:
         for lk, xyz, R, half in m.boxes:
             T = m.fk(lk, pose)
             boxes.append((lk, (T @ np.append(xyz, 1))[:3], T[:3, :3] @ R, half))
-        tg = {}
-        if "panel_stack_link" in m.links:
-            T = m.fk("panel_stack_link", pose)
-            tg["pick (stack top)"] = ((T @ np.array([0, 0, 0.30, 1.0]))[:3],
-                                      "panel_stack_link")
-        T = m.fk("contact_surface_link", pose)
-        tg["tcp (cups)"] = ((T @ np.array([0, 0, 0, 1.0]))[:3], "contact_surface_link")
-        tg["place (row)"] = (np.array([5.0, 4.2, -0.35]), None)
+        tg = cs.targets(m, pose)
         lt = {lk: m.fk(lk, pose) for lk in anchors}
         pre.append((seg, boxes, tg, lt))
 

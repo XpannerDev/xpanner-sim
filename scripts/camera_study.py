@@ -45,36 +45,51 @@ from pathlib import Path
 import numpy as np
 
 
-# The same cycle animate_cycle.py authors: (swing, boom, arm, bucket) in degrees.
-CYCLE = [
-    ("parked",      0.0, -30.0, 110.0,  20.0),
-    ("to stack",  -55.0, -32.0,  95.0,  10.0),
-    ("at stack",  -55.0, -28.0,  70.0, -10.0),
-    ("grip",      -55.0, -28.0,  70.0, -10.0),
-    ("lift",      -55.0, -52.0,  80.0,   0.0),
-    ("slew",       45.0, -52.0,  80.0,   0.0),
-    ("set down",   45.0, -33.0,  55.0, -20.0),
-    ("release",    45.0, -33.0,  55.0, -20.0),
-    ("retract",    45.0, -58.0,  90.0,   0.0),
-    ("home",        0.0, -30.0, 110.0,  20.0),
-]
+# The work cycle and its scoring windows live in assets/ecr88/cycle.json, shared with
+# animate_cycle.py so the poses scored here are exactly the poses the scene plays.
+# (Both scripts used to carry their own copy of the keyframes.) Segment s runs from
+# CYCLE[s] to CYCLE[s+1]. Scoring a target over the WHOLE cycle punishes a camera for
+# not seeing something it has no business seeing yet, so each target is scored inside
+# its window; the all-cycle number is kept beside it for situational awareness.
+CYCLE_FILE = Path(__file__).resolve().parent.parent / "assets" / "ecr88" / "cycle.json"
+
+
+def load_cycle(path=CYCLE_FILE):
+    import json
+    d = json.loads(Path(path).read_text(encoding="utf-8"))
+    cycle = [(k["name"], k["swing"], k["boom"], k["arm"], k["bucket"]) for k in d["keyframes"]]
+    phase = {t: tuple(v) for t, v in d["windows"].items() if not t.startswith("_")}
+    return cycle, phase
+
+
+CYCLE, PHASE = load_cycle()
 FOV_H_DEG, FOV_V_DEG = 80.0, 60.0
 SUBSTEPS = 6            # interpolated poses between keyframes
 
-# Which SEGMENTS of the cycle each target actually has to be seen in. Segment s runs
-# from CYCLE[s] to CYCLE[s+1].
-#
-# Scoring a target over the WHOLE cycle punishes a camera for not seeing something it
-# has no business seeing yet. The stack only matters while the tool is going for it;
-# the row only matters once the machine has slewed round to it. Coverage inside the
-# window is the number that should decide a mount. The all-cycle number is kept beside
-# it because a sensor that also sees the rest of the job is worth something for
-# situational awareness, it just is not what it is being chosen for.
-PHASE = {
-    "pick (stack top)": (1, 2, 3),        # to stack, at stack, grip -> lift
-    "tcp (cups)":       (2, 3, 6, 7),     # cups engaging, and cups releasing
-    "place (row)":      (5, 6, 7),        # slew round, set down, release
-}
+
+def targets(m, pose):
+    """What a mount has to see, per pose: {name: (world point, link excluded as occluder)}.
+
+    pick (panel edge): the middle of the outermost module's UPPER edge, 1 cm proud of its
+        face. The firmware's pick frame panelTop (panel_top_link) is the face centre, but
+        that point is under the suction pad from ~0.3 m out until release, so no camera
+        can or needs to see it; what a camera can use to judge the approach is the edge
+        showing around the pad. panelTop X points to the ground (ECR88D_*.m comment on
+        distPanelTopToLiftPosn), so "up the face" is -X. The stack is NOT excluded as an
+        occluder: the modules stand facing forward, away from the machine, so a camera
+        behind the backrest or on the house cannot see the face, and should not score it.
+    tcp (cups): the contact surface, excluding the tool it belongs to.
+    place (row): a fixed point on the working row, in the base frame.
+    """
+    t = {}
+    if "panel_top_link" in m.links:
+        T = m.fk("panel_top_link", pose)
+        half_h = next(h for lk, _, _, h in m.boxes if lk == "panel_stack_link")[2]
+        t["pick (panel edge)"] = (T @ np.array([-half_h, 0.0, 0.01, 1.0]))[:3], None
+    T = m.fk("contact_surface_link", pose)
+    t["tcp (cups)"] = (T @ np.array([0, 0, 0, 1.0]))[:3], "contact_surface_link"
+    t["place (row)"] = np.array([5.0, 4.2, -0.35]), None
+    return t
 
 
 def rpy_to_R(r, p, y):
@@ -226,15 +241,8 @@ def main(argv=None) -> int:
 
     # Targets. 'pick' and 'tcp' ride the machine; 'place' is a fixed point out on the
     # row, taken in the base frame so it does not move when the house slews.
-    def targets(pose):
-        t = {}
-        if "panel_stack_link" in m.links:
-            T = m.fk("panel_stack_link", pose)
-            t["pick (stack top)"] = (T @ np.array([0, 0, 0.30, 1.0]))[:3], "panel_stack_link"
-        T = m.fk("contact_surface_link", pose)
-        t["tcp (cups)"] = (T @ np.array([0, 0, 0, 1.0]))[:3], "contact_surface_link"
-        t["place (row)"] = np.array([5.0, 4.2, -0.35]), None
-        return t
+    def targets_at(pose):
+        return targets(m, pose)
 
     poses = []
     for i in range(len(CYCLE) - 1):
@@ -265,7 +273,7 @@ def main(argv=None) -> int:
     # 4:3 sensor, so the vertical follows the horizontal rather than being set apart.
     tan = {c: (math.tan(math.radians(hfov_of(c)) / 2.0),
                math.tan(math.radians(hfov_of(c)) / 2.0) * 0.75) for c in cams}
-    tnames = list(targets(poses[0][2]).keys())
+    tnames = list(targets_at(poses[0][2]).keys())
     score = {c: {t: 0 for t in tnames} for c in cams}
     inwin = {c: {t: 0 for t in tnames} for c in cams}
     dists = {c: {t: [] for t in tnames} for c in cams}
@@ -278,7 +286,7 @@ def main(argv=None) -> int:
             T = m.fk(lk, pose)
             world.setdefault(lk, []).append(
                 ((T @ np.append(xyz, 1))[:3], T[:3, :3] @ R, half))
-        tg = targets(pose)
+        tg = targets_at(pose)
         for c in cams:
             Tc = m.fk(c, pose)
             eye, Rc = Tc[:3, 3], Tc[:3, :3]

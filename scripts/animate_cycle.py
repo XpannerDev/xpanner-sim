@@ -24,9 +24,11 @@ at conversion time, so a target on them does nothing; the mimic is what moves th
 
 THE CYCLE
 ---------
-One pick-and-place, matching the site that build_site.py lays out: the pallet is on
-the machine's right at y = -4.2 and the tracker rows are on its left. So the machine
-swings right to pick, lifts, swings left, sets the module down, and returns.
+One pick-and-place the way the X1Exc firmware runs it (see cycle.json): tool raised,
+approach the outermost module standing on the machine's own front fork, meet its face,
+grip, lift clear of the stack, swing left to the working row, set down, release, return.
+(Until 2026-09-14 it picked off a ground pallet on the right, which the machine does not
+do: it carries its modules on the fork.)
 
 Every keyframe is inside the joint limits this asset carries; the script checks
 that and refuses rather than authoring a pose the machine would have to be dragged
@@ -39,20 +41,12 @@ import sys
 from pathlib import Path
 
 
-# (frame, swing, boom, arm, bucket) in degrees.
-# Keep boom inside [-65.73, -27.73], arm inside [0, 124], bucket inside [-126, 43].
-CYCLE = [
-    (0,     0.0, -30.0, 110.0,  20.0),   # parked, tool tucked
-    (60,  -55.0, -32.0,  95.0,  10.0),   # slew right, over the pallet
-    (120, -55.0, -28.0,  70.0, -10.0),   # reach down to the stack
-    (170, -55.0, -28.0,  70.0, -10.0),   # dwell: suction grips
-    (240, -55.0, -52.0,  80.0,   0.0),   # boom up, module clear of the stack
-    (330,  45.0, -52.0,  80.0,   0.0),   # slew left to the working row
-    (400,  45.0, -33.0,  55.0, -20.0),   # boom down, set the module on the tube
-    (450,  45.0, -33.0,  55.0, -20.0),   # dwell: release
-    (520,  45.0, -58.0,  90.0,   0.0),   # lift clear
-    (600,   0.0, -30.0, 110.0,  20.0),   # home
-]
+# (frame, swing, boom, arm, bucket) in degrees, from assets/ecr88/cycle.json -- the same
+# file camera_study.py scores, so the scene plays exactly the poses the sensor study used.
+import json as _json
+_CYCLE_FILE = Path(__file__).resolve().parent.parent / "assets" / "ecr88" / "cycle.json"
+CYCLE = [(k["frame"], k["swing"], k["boom"], k["arm"], k["bucket"])
+         for k in _json.loads(_CYCLE_FILE.read_text(encoding="utf-8"))["keyframes"]]
 JOINTS = ("swing_joint", "boom_joint", "arm_joint", "bucket_joint")
 
 

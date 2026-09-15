@@ -468,15 +468,31 @@
                              measurements, no release row exists.
        ======================================================================== -->
 
-  <!-- 처리구분 = Update after Calibration. Do NOT hardcode downstream. -->
-  <xacro:property name="distUcToForkBackX"     value="1.988"/>
-  <xacro:property name="distUcToForkBackY"     value="0.0"/>
-  <xacro:property name="distUcToForkBackZ"     value="-0.66"/>
+  <!-- 처리구분 = Update after Calibration. Do NOT hardcode downstream.
+       2026-09-14: the sheet's 기장 values (1.988, 0, -0.66) are the PRE-calibration
+       entry; the calibrated value the firmware actually runs is in the compiled X1Exc
+       binary (ECR88D_ShortArm.m:176, MdlApp.c:499): (1.844, 0, -0.7022). Adopted.
+       ForkBack is the pose CalibForkRefPose (step 28) records with the contact surface
+       held against the backrest, so its origin is where the cups meet the stack, not
+       the corner of the pallet. The uc frame is the chassis origin (MdlApp.c:12754,
+       zero offset). ECR88D_LongArm.m is on the OLD schema and has no distUcToForkBack,
+       so the 2.1 m build borrows the 1.7 m unit's calibrated carriage: same
+       undercarriage and fork hardware assumed. -->
+  <xacro:property name="distUcToForkBackX"     value="1.844"/>  <!-- OEM-FIRMWARE (ShortArm unit; sheet pre-calibration 1.988) -->
+  <xacro:property name="distUcToForkBackY"     value="0.0"/>    <!-- OEM-FIRMWARE -->
+  <xacro:property name="distUcToForkBackZ"     value="-0.7022"/> <!-- OEM-FIRMWARE (sheet pre-calibration -0.66) -->
 
   <!-- 처리구분 = Update after Calibration. -->
   <xacro:property name="distForkBackToPanelTopX" value="1.0165"/>
   <xacro:property name="distForkBackToPanelTopY" value="0.0"/>
   <xacro:property name="distForkBackToPanelTopZ" value="0.0"/>
+  <!-- 1.0165 matches the compiled firmware exactly (ECR88D_ShortArm.m:177). It is measured
+       ALONG THE FORK BLADE: panelTop = forkBack * Ry(pi/2) (+) this offset in the forkBack
+       frame (MdlApp.c:12788). The modules stand on the tilted pallet leaning on the
+       backrest; "top" is the outermost module face, 1.0165 m out along the blade, and the
+       tool meets it face-on, approaching back toward the machine. 30 x 30 mm = 0.90 m of
+       glass fills that blade. -->
+  <xacro:property name="TarPanelPickupMargin"  value="0.5"/>    <!-- OEM-FIRMWARE  SysPar.m, m. Approach point = panelTop (+) [0,0,margin]: 0.5 m out in front of the outer face (MdlApp.c:12930). -->
 
   <!-- 처리구분 = Update after Calibration.
        The ONE row in the whole parameter set that is genuinely a joint LIMIT
@@ -570,6 +586,9 @@
     <xacro:property name="distAttToContactSurfaceX"   value="0.45"   scope="global"/>
     <xacro:property name="distAttToContactSurfaceZ"   value="-0.836" scope="global"/>
     <xacro:property name="fork_chain_valid"    value="true"    scope="global"/>
+    <xacro:property name="angForkUpLimit"      value="${-pi/180*16.3246}" scope="global"/> <!-- OEM-FIRMWARE ECR88D_ShortArm.m:210 -->
+    <xacro:property name="distPanelTopToLiftPosnX" value="-3.0" scope="global"/> <!-- OEM-FIRMWARE ECR88D_ShortArm.m:178 -->
+    <xacro:property name="distPanelTopToLiftPosnZ" value="2.0"  scope="global"/>
   </xacro:if>
 
   <xacro:if value="${machine_variant == 'ECR88_US1_2P1M'}">
@@ -589,6 +608,8 @@
          Zero is "not measured", not "coincident", so the fork chain must be
          suppressed for this variant rather than built at the origin. -->
     <xacro:property name="fork_chain_valid"    value="false"   scope="global"/>
+    <xacro:property name="distPanelTopToLiftPosnX" value="-1.0" scope="global"/> <!-- OEM-FIRMWARE ECR88D_LongArm.m:170 -->
+    <xacro:property name="distPanelTopToLiftPosnZ" value="2.0"  scope="global"/>
   </xacro:if>
 
   <xacro:if value="${machine_variant == 'ECR88_US1_2P1M_NEWSUCTION'}">
@@ -606,6 +627,8 @@
     <xacro:property name="distAttToContactSurfaceX"   value="0.355"  scope="global"/>
     <xacro:property name="distAttToContactSurfaceZ"   value="-0.832" scope="global"/>
     <xacro:property name="fork_chain_valid"    value="true"    scope="global"/>
+    <xacro:property name="distPanelTopToLiftPosnX" value="-1.0" scope="global"/> <!-- OEM-FIRMWARE ECR88D_LongArm.m:170 -->
+    <xacro:property name="distPanelTopToLiftPosnZ" value="2.0"  scope="global"/>
   </xacro:if>
 
   <!-- ========================================================================

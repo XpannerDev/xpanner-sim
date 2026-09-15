@@ -1,0 +1,129 @@
+{
+ "_doc": [
+  "One panel pick-and-place, shaped after the X1Exc state machine and aimed at the firmware's own frames.",
+  "Single source for scripts/animate_cycle.py (authors USD drive targets) and scripts/camera_study.py / optimize_cameras.py (score sensor mounts over the same poses).",
+  "Angles in degrees, firmware joint convention (== URDF: boom -69..-31 up-negative, arm 31..155 in-positive).",
+  "home: tool raised in front of the machine, house square (Positioning/Raise+Swing end with swing ~0).",
+  "approach -> contact: contact_surface onto panel_pick_approach_link then panel_top_link (firmware panelTopWithMargin / panelTop), tool Z along the fork blade. Solved to 0.2 mm; ~3 deg of normal error is the out-of-plane part a 3 deg swing introduces with tilt/rotator at 0.",
+  "lift clear: output link 1.98 m and tool 0.95 m above the chassis origin, past the firmware's Placing gates OutpLinkHgtToClearPanelStack = 1.0 and ToolHgtForSwingInChs = 0.7/0.8 (SysPar.m:264, :274; MdlApp.c:13060).",
+  "hover -> set down: tool Z up onto the working row at (4.712, 4.5, -0.207), solved to 0.1 mm.",
+  "Solved by planar IK over the URDF in build/ (boom/arm/bucket share the Y axis, so tool pitch fixes bucket and position is a 2-D search). Regenerate if the geometry or limits change: animate_cycle.py refuses keyframes outside the limits in the USD."
+ ],
+ "keyframes": [
+  {
+   "name": "home (raised)",
+   "frame": 0,
+   "swing": 0.0,
+   "boom": -67.84,
+   "arm": 116.59,
+   "bucket": -50.49
+  },
+  {
+   "name": "approach",
+   "frame": 60,
+   "swing": 2.59,
+   "boom": -46.03,
+   "arm": 107.77,
+   "bucket": 12.31
+  },
+  {
+   "name": "contact",
+   "frame": 110,
+   "swing": 3.03,
+   "boom": -47.22,
+   "arm": 121.69,
+   "bucket": -0.41
+  },
+  {
+   "name": "grip",
+   "frame": 150,
+   "swing": 3.03,
+   "boom": -47.22,
+   "arm": 121.69,
+   "bucket": -0.41
+  },
+  {
+   "name": "lift clear",
+   "frame": 190,
+   "swing": 3.03,
+   "boom": -67.98,
+   "arm": 106.52,
+   "bucket": 35.51
+  },
+  {
+   "name": "slew",
+   "frame": 270,
+   "swing": 45.0,
+   "boom": -67.98,
+   "arm": 106.52,
+   "bucket": 35.51
+  },
+  {
+   "name": "hover",
+   "frame": 340,
+   "swing": 45.0,
+   "boom": -38.07,
+   "arm": 51.49,
+   "bucket": -15.15
+  },
+  {
+   "name": "set down",
+   "frame": 400,
+   "swing": 45.0,
+   "boom": -34.19,
+   "arm": 59.34,
+   "bucket": -26.89
+  },
+  {
+   "name": "release",
+   "frame": 440,
+   "swing": 45.0,
+   "boom": -34.19,
+   "arm": 59.34,
+   "bucket": -26.89
+  },
+  {
+   "name": "retract",
+   "frame": 480,
+   "swing": 45.0,
+   "boom": -38.07,
+   "arm": 51.49,
+   "bucket": -15.15
+  },
+  {
+   "name": "slew back",
+   "frame": 540,
+   "swing": 3.03,
+   "boom": -67.98,
+   "arm": 106.52,
+   "bucket": 35.51
+  },
+  {
+   "name": "home (raised)",
+   "frame": 600,
+   "swing": 0.0,
+   "boom": -67.84,
+   "arm": 116.59,
+   "bucket": -50.49
+  }
+ ],
+ "windows": {
+  "_doc": "Segment s runs keyframes[s] -> keyframes[s+1]. A target is scored only inside the segments where it has to be seen.",
+  "tcp (cups)": [
+   1,
+   2,
+   6,
+   7
+  ],
+  "place (row)": [
+   5,
+   6,
+   7
+  ],
+  "pick (panel edge)": [
+   0,
+   1,
+   2
+  ]
+ }
+}
