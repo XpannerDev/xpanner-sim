@@ -40,3 +40,29 @@ print(h.describe())
 - 정확도 임계값 `u.verticalAccuracyGood/PoorThld` 는 **입력 포트**다. 안 넣으면 GNSS 가 영원히 불량이다.
   `nominal_inputs()` 가 모델 기본값(0.02 / 0.04 m)을 넣는다.
 - 파생 플래그는 전부 **1 틱 늦게** 상태머신에 도달한다. 같은 틱 인과를 가정하지 말 것.
+
+## Isaac Sim 에 물리기 — 캘리브 step 28 (첫 SIL 시나리오)
+
+펌웨어는 시뮬이 내보내는 **IMU 만** 보고 자세를 계산한다. step 28 은 동작·밸브·GNSS 없이 포크 기준을 기록하는
+순수 FK 읽기라서, IMU 체인과 기하를 가장 싸게 검증한다. 판정 = 펌웨어가 기록한 값 vs 같은 식을 Isaac 정답에 적용한 값.
+
+```bash
+cd ~/jude/xpanner-sim
+python3 sil/build.py
+mkdir -p build/isaac && chmod 777 build/isaac          # 컨테이너 uid 1234 가 쓸 수 있게
+xacro assets/ecr88/urdf/ecr88.urdf.xacro machine_variant:=ECR88_KIJANG model_cylinders:=false \
+      model_panel_stack:=false -o build/isaac/ecr88_kijang_step28.urdf
+# 자세 계획(백레스트 0.5 m 앞, 스윙 0) -> build/isaac/step28_pose.json : scripts/sil_isaac_step28.py 문서 참고
+docker exec isaac-sim-jude /isaac-sim/python.sh /work/xpanner-sim/scripts/urdf_to_usd.py \
+      --urdf /work/xpanner-sim/build/isaac/ecr88_kijang_step28.urdf \
+      --output /work/xpanner-sim/build/isaac/ecr88_kijang_step28.usd --rest-pose ...
+docker exec isaac-sim-jude /isaac-sim/python.sh /work/xpanner-sim/scripts/sil_isaac_step28.py \
+      --usd /work/xpanner-sim/build/isaac/ecr88_kijang_step28.usd \
+      --pose /work/xpanner-sim/build/isaac/step28_pose.json \
+      --report /work/xpanner-sim/build/isaac/step28_report.json
+```
+
+2026-09-15 결과: 관절각 ≤ 3e-5°, `angForkUpLimit` 1e-4°, `distUcToForkBack` 0.008 mm.
+**1.7 m 변형을 쓰는 이유**: 레포 바이너리가 `ECR88D_ShortArm.m` 으로 컴파일돼 있고, 그 변형의 URDF 가 같은 유닛의
+IMU 장착행렬·흡착기 치수를 쓴다. 2.1 m 로 돌리려면 `h.load_imu_mounts("ECR88D_LongArm.m")` 와 LongArm 기하를 `par.*` 에 넣어야 한다.
+**4절링크**: URDF 입력링크는 1:1 mimic 자리표시자라, bktImu 는 Isaac 출력링크 각의 실제 4절 역해(`kinematics.fourbar_input`)로 발행한다.
