@@ -57,3 +57,28 @@ python3 scripts/sil_step28_prepare.py     # 1.7 m URDF 전개 + 자세 계획 + 
 **1.7 m 변형을 쓰는 이유**: 레포 바이너리가 `ECR88D_ShortArm.m` 으로 컴파일돼 있고, 그 변형의 URDF 가 같은 유닛의
 IMU 장착행렬·흡착기 치수를 쓴다. 2.1 m 로 돌리려면 `h.load_imu_mounts("ECR88D_LongArm.m")` 와 LongArm 기하를 `par.*` 에 넣어야 한다.
 **4절링크**: URDF 입력링크는 1:1 mimic 자리표시자라, bktImu 는 Isaac 출력링크 각의 실제 4절 역해(`kinematics.fourbar_input`)로 발행한다.
+
+## Isaac Sim 에 물리기 — 펌웨어가 기계를 움직이는 첫 시나리오 (Picking)
+
+`sil/isaac_plant.py` 의 `IsaacPlant` 는 `KinematicPlant` 와 밸브 모델·센서 발행이 **완전히 같고**, 적분만 Isaac 에 맡긴다:
+밸브 → 관절 속도 → articulation **속도 목표** → 물리 10 ms → 관절 상태를 읽어 IMU 발행. 중력·드라이브 한계가 기계에 걸린다.
+속도 드라이브 감쇠 `kd` 는 GUESS (붐/암/버킷 1e8, 스윙 1e7, 틸트/로테이터 1e6) — 유량원인 유압축에 가깝게 강한 속도루프로 뒀다.
+
+```bash
+python3 scripts/sil_step28_prepare.py      # USD 가 없으면 먼저 (같은 1.7 m 무실린더 USD 를 쓴다)
+docker exec isaac-sim-jude /isaac-sim/python.sh /work/xpanner-sim/scripts/sil_isaac_prepare_pick.py \
+    --usd /work/xpanner-sim/build/isaac/ecr88_kijang_step28.usd --report /work/xpanner-sim/build/isaac/prepare_pick_report.json
+```
+
+시나리오: Standby → Picking 점프 → **PreparePick** (붐/암/링크 관절공간) → **ApproachPanel** (작업공간) 15 초 → 일시정지 2 초 → 정지 비교.
+
+2026-09-15 결과 (3 분, GPU 여유 있음):
+- PreparePick → ApproachPanel **3.2 초** (틱 320). 이동 붐 9.8° / 암 35.4° / 링크 53.8°, 목표 스트로크 오차 붐 0.16° / 암 0.001° / 링크 0.03° (허용 2/1/1°).
+- **일시정지 후 정지 상태**: 펌웨어가 믿는 툴 위치 vs Isaac 실제 위치 **0.16 / 0.05 / 0.10 mm**, 관절 ≤ 0.02°.
+- 이동 중 펌웨어 관절 추정은 최대 3.2° 뒤처진다 — **Isaac 탓이 아니다**: 완전 적분 플랜트에서도 3.3° (펌웨어 추정 지연).
+- ApproachPanel 목표는 `panelBottom` 이고 `armIn`/`bm1Down` 에 최소출력 유지가 걸린다 (`MdlApp.c:6882-6893, 8380-8402`).
+  씬에 패널·컵이 없으니 **15 초 동안 계속 눌러 내려갔다** (툴 z −0.19 → −0.88 m). 컵 4 개 접촉 말고는 멈출 조건이 없다 — 설계 의도인지 David 확인.
+- 주행 밸브가 계속 열려 있다 (`trvlRiFwd` 70 %): 하부체 정렬 제어인데 이 플랜트는 하부체를 움직이지 않는다 (플랜트 한계, 펌웨어 결함 아님).
+
+함정: articulation 에 자세를 순간이동시킬 때 **mimic 조인트(`input_link_joint`)도 같이 옮길 것.** 안 옮기면 mimic 구속이
+한 스텝에 끌어당겨 암 −8°, 링크 +26° 가 튄다 (`IsaacPlant.push_pose` 가 처리). step 28 은 위치 드라이브가 되돌려서 안 드러났다.
