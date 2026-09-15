@@ -173,7 +173,7 @@ FW_JOINT = {"swing": "ChsToUc", "boom": "BmMntToBm1", "arm": "Bm2ToArm", "input_
             "tilt": "TiltMntToTilt", "rotator": "TiltToRot"}
 SWING_SWITCH_HALFWIDTH = 1.0 * DEG      # ASSUMPTION = SwingZeroProxEdgeOffs, SysPar.m:198
 WRAPPED = ("swing", "rotator")
-ACC_SIGN = -1.0                         # g along world up; evidence in the module docstring (Accelerometer)
+ACC_SIGN = kin.ACC_SIGN                 # g along world up; single definition in sil.kinematics (evidence: module docstring, Accelerometer)
 
 
 def wrap(a):

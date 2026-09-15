@@ -1027,10 +1027,11 @@ class TestJointRatesFromGyros(ImuCase):
         R_chs = kin.rpy_to_R(8 * DEG, 6 * DEG, 40 * DEG)
         self.pose(R_chs, *self.POSE, 12 * DEG, rates={"bm1": [0, 0.2, 0], "chs": [0, 0, 0.3]})
 
-        # kin.publish_imus' accelerometer is consistent with its quaternion: the specific force
-        # the firmware stores, rotated out of the IMU axes, is +1 g up in chassis axes.
+        # kin.publish_imus' accelerometer is consistent with its quaternion: the reading the firmware
+        # stores, rotated out of the IMU axes, is ACC_SIGN * 1 g along up in chassis axes (ACC_SIGN = -1
+        # since 2026-09-15: the sign under which calibration rebuilds the compiled mounts).
         M = kin.mounts_from_fw(fw)["imuChs"]
-        self.assertLess(np.abs(M.T @ np.array(fw["y.chs.accRaw"]) - R_chs.T @ UP).max(), 1e-6)
+        self.assertLess(np.abs(M.T @ np.array(fw["y.chs.accRaw"]) - R_chs.T @ (kin.ACC_SIGN * UP)).max(), 1e-6)
 
         joints = Y_JOINTS + ("ArmToOutpLink", "TiltMntToTilt", "ChsToUc")
 

@@ -21,10 +21,11 @@ CONVENTIONS (all established by that test file, citations there)
                  0.5 deg (the firmware never normalises).
     Gyro         link body rate w (link coords): gyro = mirror(M @ w). Joint RATES come only
                  from gyro differences; zero gyro gives qDot == 0 while angles move.
-    Accel        specific force in g, at rest +1 g along world up: acc = mirror(R_imu.T @ up).
-                 Only calibration (CalcImuMntOri) reads it. The sign of the real sensor's
-                 specific force is NOT established; vy of the identified mount is invariant
-                 to it (verifier note on chart_2291), vx/vz are not.
+    Accel        at rest the board reads ACC_SIGN * 1 g along world up: acc = mirror(R_imu.T @ ACC_SIGN*up).
+                 Only calibration (CalcImuMntOri) reads it. ACC_SIGN = -1 (2026-09-15): the compiled
+                 IMU mounts are rebuilt by the firmware's own calibration only with -1 g; with +1 g
+                 CalibArm/CalibLink/CalibChs save mounts turned 180 deg (sil/plant.py docstring and
+                 tests test_calib_*_plant). Shared with sil.plant so every publisher agrees.
     Euler        firmware uses 312 for chassis roll/pitch; a 321 comparator is off by >1 deg
                  at roll 8 / pitch 6.
 """
@@ -37,6 +38,7 @@ import numpy as np
 PORT_MOUNT = {"chs": "imuChs", "bm1": "imuBm1", "arm": "imuArm", "bkt": "imuLink", "tilt": "imuTilt"}
 MOUNT_NAMES = ("imuChs", "imuBm1", "imuArm", "imuLink", "imuTilt")
 UP = np.array([0.0, 0.0, 1.0])
+ACC_SIGN = -1.0
 
 
 def Rx(a):
@@ -191,7 +193,7 @@ def link_frames(fw, R_chs=None, q_bm1=0.0, q_arm=0.0, q_inp=0.0, q_tilt=0.0):
     return {"chs": R_chs, "bm1": R_bm1, "arm": R_arm, "bkt": R_arm @ Ry(q_inp), "tilt": R_tilt}
 
 
-def publish_imus(fw, frames, rates=None, accel=True):
+def publish_imus(fw, frames, rates=None, accel=True, acc_sign=ACC_SIGN):
     """Write u.<port>ImuQuat (and AngRate / Acc) for world link orientations `frames`
     (port -> R_world<-link). rates: port -> link body angular velocity in link coordinates."""
     M = mounts_from_fw(fw)
@@ -202,4 +204,4 @@ def publish_imus(fw, frames, rates=None, accel=True):
         w = np.zeros(3) if rates is None or port not in rates else np.asarray(rates[port], dtype=float)
         fw[f"u.{port}ImuAngRate"] = mirror(Mm @ w)
         if accel:
-            fw[f"u.{port}ImuAcc"] = mirror(R_imu.T @ UP)
+            fw[f"u.{port}ImuAcc"] = mirror(R_imu.T @ (acc_sign * UP))

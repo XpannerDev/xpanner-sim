@@ -1176,8 +1176,11 @@ class TestAxisCalibWithoutPlant(unittest.TestCase):
         # across gravity and vz = cross(v1, v2) is +-gravity in board axes -- on this level machine
         # +- the compiled z column; vy = cross(accRef, vz) is a cross of two near-parallel vectors,
         # so its direction is noise. Result: a proper rotation with a RANDOM YAW, and an upside-down
-        # z whenever v1 x v2 happens to point down (a coin toss). Asserted per seed and across
-        # NOISE_SEEDS (measured: 20/20 rewritten, 11/20 flipped, yaw errors -169..+175 deg).
+        # z whenever v1 x v2 happens to point down (a coin toss). WHETHER a seed passes the gate is
+        # itself noise: a seed whose chord cross product stays under 1e-6 leaves the mount bit-identical.
+        # So: per seed, EITHER rewritten with the properties below OR untouched; across NOISE_SEEDS a
+        # clear majority rewritten. Measured with the -1 g accelerometer (kinematics.ACC_SIGN, since
+        # 2026-09-15): 18/20 rewritten (seeds 5, 12 untouched); with +1 g it was 20/20.
         #
         # Why it cannot hurt THIS build, and why that is no comfort: the calibrated mount is an
         # output only. Link attitude reads parLocalTest.imuChs, and every u.*_MntOriStored inport --
@@ -1212,7 +1215,7 @@ class TestAxisCalibWithoutPlant(unittest.TestCase):
         self.assertTrue(np.array_equal(mount(h.fw, "y.imuMntOri_chs"), mount(h.fw, "par.imuChs")))
         self.assertLess(mount(h.fw, "y.imuMntOri_chs")[2, 2], -0.999)
 
-        flipped, yaw_err = 0, []
+        flipped, yaw_err, rewritten = 0, [], 0
         for seed in NOISE_SEEDS:
             with self.subTest(seed=seed):
                 emu = SaveHandshake()
@@ -1229,7 +1232,10 @@ class TestAxisCalibWithoutPlant(unittest.TestCase):
                 after = mount(fw, "y.imuMntOri_chs")
                 self.assertEqual(len(emu.saved), 1)
                 self.assertTrue(np.array_equal(mount(emu.saved[0][1], "y.imuMntOri_chs"), after))
-                self.assertFalse(np.array_equal(after, compiled))                  # rewritten
+                if np.array_equal(after, compiled):                                # gate not passed: untouched
+                    self.assertEqual(h.inhibit_status(), inhibit_before)
+                    continue
+                rewritten += 1
                 np.testing.assert_allclose(after @ after.T, np.eye(3), atol=1e-5)  # a proper rotation
                 self.assertAlmostEqual(np.linalg.det(after), 1.0, places=5)
                 z_dot = float(after[:, 2] @ compiled[:, 2])
@@ -1244,8 +1250,9 @@ class TestAxisCalibWithoutPlant(unittest.TestCase):
                 np.testing.assert_allclose(mat(fw, "y.links.chs.R"), chs_R_before, atol=1e-6)
                 self.assertEqual(h.inhibit_status(), inhibit_before)
         with self.subTest(check="across seeds"):
+            self.assertGreaterEqual(rewritten, 3 * len(NOISE_SEEDS) // 4)     # vibration alone rewrites the mount
             self.assertGreater(flipped, 0)                                   # upside down happens
-            self.assertLess(flipped, len(NOISE_SEEDS))                       # ... and so does upright
+            self.assertLess(flipped, rewritten)                              # ... and so does upright
             yaw = sorted(math.atan2(math.sin(a), math.cos(a)) for a in yaw_err)
             gaps = [b - a for a, b in zip(yaw, yaw[1:])] + [yaw[0] + 2 * math.pi - yaw[-1]]
             self.assertLess(max(gaps), math.pi)          # yaw errors are not confined to a half circle
