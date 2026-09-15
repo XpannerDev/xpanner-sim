@@ -70,9 +70,11 @@ Coder 가 `*Stored` 인포트를 접어 없앴다 (예: `MdlApp.c:41963` "Switch
 | A7 | **Picking 중 진공이 먼저 걸리면 PickingInhibited 에 래치**되고 Auto 로는 안 풀린다 (bit 9 만 보임). 탈출은 Cancel/Standby/EngagingVacuum 요청뿐이고, **EngagingVacuum 요청은 펌프를 켜지 않은 채 ReadyToPlace 로 건너뛴다** ("잡은" 패널에 펌프가 꺼져 있음) | `MdlApp.c:23002-23200, 40199` | `test_vacuum_logic.test_vacuum_during_picking_latches_picking_inhibited`, `test_picking_inhibited_escapes` |
 | A8 | `ReadyToReleaseInhibited` 에 취소 경로가 없다 | 명세 A8 | 소스 확인 |
 | A9 | 붐 스윙 각을 0 으로 고정(센서 없음) → 붐이 옆으로 가 있으면 최대 860 mm 를 모른 채 계산 | `SysPar.m:72` | 소스 확인 |
+| A10 | **해제 대기 중 일시정지 후 5 초 넘게 지나 재개하면 Releasing 에서 영원히 기다린다.** 받침대 확인은 컵 접촉 **상승 에지**의 5 초 원샷이라, 컵이 이미 앉아 있으면 새 에지가 없다. 풀려면 컵 **4 개를 5 초 안에 모두** 뗐다 다시 붙여야 한다 (하나만으로는 안 됨). 알람 없음 | `MdlApp.c:48553-48678, 48800-48815` | `test_vacuum_logic.test_receiver_confirmation_is_a_five_second_one_shot_and_pause_rearms` |
 
-**정정:** 예전 목록의 "릴리즈 중 일시정지하면 블로오프가 알람 없이 취소" 는 **틀렸다.** 일시정지해도 `CurrStep` 이 Releasing 으로
-남아 벤팅이 계속된다 (`MdlApp.c:48774-48793, 40367`, `test_vacuum_logic.test_pause_during_blow_off_keeps_venting`).
+**정정:** 예전 목록의 "릴리즈 중 일시정지하면 블로오프가 알람 없이 취소" 는 **부정확했다.** 벤팅이 시작된 뒤 일시정지하면 벤팅은
+계속되고 (`MdlApp.c:48774-48793, 40367`, `test_pause_during_blow_off_keeps_venting`), 확인 대기 중 일시정지는 대기를 멈추지만
+재개하면 다시 대기한다 (일시정지 중 앉은 컵도 인정). 실제 함정은 위 A10 이다.
 "리모컨 링크 끊김이 자동을 막지 않는다" 는 **MdlApp 수준에서만** 사실이다 — ECU 래퍼가 리모컨 Auto 버튼·조이스틱을 0 으로 만든다
 (`PrePostProc_If.c:275-285`).
 
