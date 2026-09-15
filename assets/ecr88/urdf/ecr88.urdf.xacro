@@ -1457,15 +1457,15 @@
     <!-- imuChs. Flat, yawed 101.012 deg. Position: in the house, low and central. -->
     <xacro:imu_mount name="imu_chs" parent="house_link"
                      xyz="0.20 0.30 ${lenUppZ1 + 0.25}"
-                     rpy="-0.004742750 -0.008549333 -1.762994439"/>
+                     rpy="${imu_rpy_chs}"/>
     <!-- imuBm1. Side plate at 32.447 deg. Position: outboard face near the boom foot. -->
     <xacro:imu_mount name="imu_boom" parent="boom_link"
                      xyz="0.70 ${-geo_boom_sec_w * half - 0.02} 0.20"
-                     rpy="-1.571816342 -0.566316481 -0.000590754"/>
+                     rpy="${imu_rpy_boom}"/>
     <!-- imuArm. Side plate at -6.043 deg. -->
     <xacro:imu_mount name="imu_arm" parent="arm_link"
                      xyz="0.45 ${-geo_arm_sec_w * half - 0.02} 0.12"
-                     rpy="-1.579068528 0.105440054 -0.003310372"/>
+                     rpy="${imu_rpy_arm}"/>
     <!-- imuLink (bus: bktImu, CAN node 0x74). Side plate at -3.372 deg.
          It is on the four-bar INPUT link, not the output link this frame used to hang
          from. X1Exc KinematicsCalc (MdlApp.c:11680-11686):
@@ -1480,14 +1480,14 @@
     <xacro:if value="$(arg model_bucket_fourbar)">
       <xacro:imu_mount name="imu_link" parent="input_link"
                        xyz="${lenInpLink * half} ${-geo_linkage_r - 0.02} 0"
-                       rpy="-1.575935070 0.058856870 0.001290998"/>
+                       rpy="${imu_rpy_link}"/>
     </xacro:if>
     <!-- imuTilt. Full axis permutation. Under the transpose its pitch is -0.57 deg, so
          the old gimbal-lock warning (pitch 88 deg under M) no longer applies; still,
          regenerate from a11..a33 rather than hand-tuning. -->
     <xacro:imu_mount name="imu_tilt" parent="tilt_link"
                      xyz="0.05 0.0 -0.08"
-                     rpy="1.549803632 -0.010023128 -1.597706287"/>
+                     rpy="${imu_rpy_tilt}"/>
     <!-- imuBm2 is deliberately absent. Its matrix in the firmware is the identity and
          lenBm2 = 0: the slot exists on the bus, the sensor does not exist on the
          machine. Emitting a frame for it would invent hardware. -->

@@ -589,6 +589,14 @@
     <xacro:property name="angForkUpLimit"      value="${-pi/180*16.3246}" scope="global"/> <!-- OEM-FIRMWARE ECR88D_ShortArm.m:210 -->
     <xacro:property name="distPanelTopToLiftPosnX" value="-3.0" scope="global"/> <!-- OEM-FIRMWARE ECR88D_ShortArm.m:178 -->
     <xacro:property name="distPanelTopToLiftPosnZ" value="2.0"  scope="global"/>
+    <!-- IMU mounting rotations = rpy(M transpose) of the ECR88D_ShortArm.m (1.7 m, the unit the repo's binary is compiled for) imu* matrices. Mounts are PER-UNIT calibration
+         results: pairing a URDF from one unit with a firmware carrying another misreads arm/link by ~4 deg
+         with no fault (sil/tests/test_imu_kinematics.py). -->
+    <xacro:property name="imu_rpy_chs" value="-0.001755416 -0.002555442 -1.783640195" scope="global"/>
+    <xacro:property name="imu_rpy_boom" value="-1.567613598 -0.571866959 0.006005104" scope="global"/>
+    <xacro:property name="imu_rpy_arm" value="-1.573310335 0.033289461 -0.003775542" scope="global"/>
+    <xacro:property name="imu_rpy_link" value="-1.575791294 0.068579979 -0.006844645" scope="global"/>
+    <xacro:property name="imu_rpy_tilt" value="1.579079426 -0.015406954 -1.622796371" scope="global"/>
   </xacro:if>
 
   <xacro:if value="${machine_variant == 'ECR88_US1_2P1M'}">
@@ -610,6 +618,14 @@
     <xacro:property name="fork_chain_valid"    value="false"   scope="global"/>
     <xacro:property name="distPanelTopToLiftPosnX" value="-1.0" scope="global"/> <!-- OEM-FIRMWARE ECR88D_LongArm.m:170 -->
     <xacro:property name="distPanelTopToLiftPosnZ" value="2.0"  scope="global"/>
+    <!-- IMU mounting rotations = rpy(M transpose) of the ECR88D_LongArm.m (2.1 m US unit) imu* matrices. Mounts are PER-UNIT calibration
+         results: pairing a URDF from one unit with a firmware carrying another misreads arm/link by ~4 deg
+         with no fault (sil/tests/test_imu_kinematics.py). -->
+    <xacro:property name="imu_rpy_chs" value="-0.004742750 -0.008549333 -1.762994439" scope="global"/>
+    <xacro:property name="imu_rpy_boom" value="-1.571816342 -0.566316481 -0.000590754" scope="global"/>
+    <xacro:property name="imu_rpy_arm" value="-1.579068528 0.105440054 -0.003310372" scope="global"/>
+    <xacro:property name="imu_rpy_link" value="-1.575935070 0.058856870 0.001290998" scope="global"/>
+    <xacro:property name="imu_rpy_tilt" value="1.549803632 -0.010023128 -1.597706287" scope="global"/>
   </xacro:if>
 
   <xacro:if value="${machine_variant == 'ECR88_US1_2P1M_NEWSUCTION'}">
@@ -629,6 +645,14 @@
     <xacro:property name="fork_chain_valid"    value="true"    scope="global"/>
     <xacro:property name="distPanelTopToLiftPosnX" value="-1.0" scope="global"/> <!-- OEM-FIRMWARE ECR88D_LongArm.m:170 -->
     <xacro:property name="distPanelTopToLiftPosnZ" value="2.0"  scope="global"/>
+    <!-- IMU mounting rotations = rpy(M transpose) of the ECR88D_LongArm.m (2.1 m US unit) imu* matrices. Mounts are PER-UNIT calibration
+         results: pairing a URDF from one unit with a firmware carrying another misreads arm/link by ~4 deg
+         with no fault (sil/tests/test_imu_kinematics.py). -->
+    <xacro:property name="imu_rpy_chs" value="-0.004742750 -0.008549333 -1.762994439" scope="global"/>
+    <xacro:property name="imu_rpy_boom" value="-1.571816342 -0.566316481 -0.000590754" scope="global"/>
+    <xacro:property name="imu_rpy_arm" value="-1.579068528 0.105440054 -0.003310372" scope="global"/>
+    <xacro:property name="imu_rpy_link" value="-1.575935070 0.058856870 0.001290998" scope="global"/>
+    <xacro:property name="imu_rpy_tilt" value="1.549803632 -0.010023128 -1.597706287" scope="global"/>
   </xacro:if>
 
   <!-- ========================================================================
