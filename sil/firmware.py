@@ -32,6 +32,7 @@ patched a parameter cannot leak into the next one.
 """
 import ctypes
 import json
+import math
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -170,7 +171,10 @@ class Firmware:
                     raise OverflowError(f"{path}: {iv} is outside [{lo}, {hi}] and would wrap")
                 conv.append(iv)
             else:
-                conv.append(float(v))
+                fv = float(v)
+                if math.isfinite(fv) and code == "f" and abs(fv) > 3.4028234663852886e38:
+                    raise OverflowError(f"{path}: {fv!r} exceeds real32_T and would be stored as inf")
+                conv.append(fv)
         for i, v in enumerate(conv):
             arr[i] = v
 

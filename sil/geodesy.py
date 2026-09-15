@@ -14,8 +14,9 @@ Site() writes the "bare TM" collapse recommended in spec A3.3: identity datum an
 Helmert, zero vertical plane, no geoid, TM with k0 = 1 and no false origin, projection origin
 at the scene reference. Site E/N/H then equals world X/Y/Z.
 
-Heading: chassis yaw psi is CCW about +Up from grid East; y.machHeading = wrap(pi/2 - psi),
-the clockwise-from-North azimuth of chassis +X. Only the baseline DIRECTION matters.
+Heading: y.machHeading = pi/2 - euAng_ChsEstm_z (MdlApp.c:13422), where euAng_ChsEstm_z is the
+TILT-COMPENSATED baseline angle (:11768-11772). On a level chassis that is the clockwise-from-
+North azimuth of chassis +X; with roll/pitch it is not. Only the baseline DIRECTION matters.
 """
 import math
 

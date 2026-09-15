@@ -133,8 +133,9 @@ def identify_mount_source(fw, x1exc_data_dir, tol=1e-6):
 # -- firmware link geometry -------------------------------------------------------------------
 def fourbar_output(fw, q_inp):
     """ArmToOutpLink from ArmToInpLink, the firmware's own Freudenstein branch
-    (MdlApp.c:11140-11200, :11777-11800). Returns None where the firmware would output 0
-    because the loop cannot close (det < 0)."""
+    (MdlApp.c:11140-11200, :11777-11800). Returns None where the loop cannot close
+    (det < 0). The firmware does not flag that case: it sets angOutpLink = 0 (:11180) and then
+    adds angArmToGndLink (:11789), so y.jnts.ArmToOutpLink.q silently reads angArmToGndLink."""
     k = lambda n: fw[f"par.parKin.{n}"]
     a, b, c, d = k("lenInpLink"), k("lenConnRod"), k("lenOutpLink"), k("lenGndLink")
     ang_inp = q_inp - k("angArmToGndLink")

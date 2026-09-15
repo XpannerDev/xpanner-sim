@@ -30,7 +30,7 @@ NOMINAL POSE
     nominal_inputs() publishes IMUs for a physically possible rest pose (level house, boom
     -40, arm 90, input link -60, tilt 0 deg, firmware convention). Identity quaternions are
     NOT a pose through the compiled mounts: they read boom +71, arm +165, tilt -107 deg with
-    the tool 2.85 m below the chassis.
+    the tool about 1.5 m below the chassis origin.
 """
 import csv
 import math
@@ -66,7 +66,9 @@ class SaveHandshake:
     SaveInternalParam + WriteToNVM). Without this plant every _save state waits out its 1.0 s
     fallback (CntCalib_save = 100)."""
 
-    SNAPSHOT_PREFIXES = ("y.parKin.", "y.imuMntOri", "y.tblReqSpdToActCmd.")
+    # Everything AppCtrlIf.c:801-1018 copies into NVM while isCalibrating, incl. the CalibRot
+    # zero offset (AppCtrlIf.c:882).
+    SNAPSHOT_PREFIXES = ("y.parKin.", "y.imuMntOri", "y.tblReqSpdToActCmd.", "y.jntAngRotZeroOffs")
 
     def __init__(self):
         self.prev_req = False
@@ -234,7 +236,12 @@ class Harness:
     def jump_to_step(self, step, start=True):
         """The tablet step jump: from Standby or any <X>Paused / <X>Inhibited, changing
         autoReqStep lands in <X>Paused without that step's entry guard (chart_2537); a
-        StartPause edge then runs it. Does nothing from a running state -- pause first."""
+        StartPause edge then runs it. From a RUNNING state it does nothing at all -- no write,
+        no tick: the firmware ignores the step change there, and the StartPause edge would
+        PAUSE the run (MdlApp.c:18960) instead of starting anything. Pause first."""
+        # A running calibration reports isCalibrating, not autoCtrl_StartStopSts.
+        if self.is_running() or self.fw["y.isCalibrating"]:
+            return self
         self.request_step(step)
         self.tick()
         if start:
