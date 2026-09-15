@@ -12,6 +12,18 @@ ONE FIRMWARE PER PROCESS. MdlApp keeps all of its state in C globals (MdlApp_U/Y
 and parLocalTest), so two Firmware objects in one process would be the same machine.
 The constructor refuses a second instance. Run parallel scenarios as separate processes.
 
+STEP REQUIRES RESET. Stepping before MdlApp_initialize() runs with rtNaN = rtInf = 0 and
+un-initialised DW (e.g. chassis heading -135 deg); step() refuses until reset() has run.
+
+WRITES ARE CHECKED. boolean_T fields take 0/1 only in the firmware's eyes (it ANDs them and
+stores them in 1-bit bitfields: writing 2 reads as FALSE, MdlApp.c:12068, :12153), so truthy
+values are normalised to 1. Integer fields reject non-integral floats and out-of-range values
+instead of wrapping (256 into uint8 autoReqStep would silently become NoTarget).
+
+FLOATING-POINT ENVIRONMENT. step() checks MXCSR flush-to-zero / denormals-are-zero and the
+rounding mode before every call. A physics engine in the same process may change them, which
+would alter the firmware's filters with no visible error.
+
 RESET IS MORE THAN MdlApp_initialize(). initialize() zeroes U, Y, B and DW but does NOT
 touch parLocalTest, which is an ordinary writable global the harness is expected to
 overwrite. reset() therefore restores the bytes parLocalTest had at load (its static
@@ -24,6 +36,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 BUILD = REPO / "build" / "sil"
+
+_INT_RANGE = {
+    "b": (-2 ** 7, 2 ** 7 - 1), "B": (0, 2 ** 8 - 1), "h": (-2 ** 15, 2 ** 15 - 1), "H": (0, 2 ** 16 - 1),
+    "i": (-2 ** 31, 2 ** 31 - 1), "I": (0, 2 ** 32 - 1), "e": (-2 ** 31, 2 ** 31 - 1),
+}
 
 _CTYPES = {
     "b": ctypes.c_int8, "B": ctypes.c_uint8, "?": ctypes.c_uint8,
@@ -56,6 +73,16 @@ class Firmware:
         self.lib.sil_base.argtypes = [ctypes.c_uint]
         self.lib.sil_base_size.restype = ctypes.c_ulong
         self.lib.sil_base_size.argtypes = [ctypes.c_uint]
+        self.lib.sil_fp_env_violation.restype = ctypes.c_uint
+        self._internals = {}
+        for name, ctype in self.manifest.get("internals", []):
+            fn = getattr(self.lib, f"sil_int_{name}")
+            fn.restype = ctypes.c_float if ctype == "float" else (
+                ctypes.c_int if ctype == "int" else ctypes.c_uint)
+            self._internals[name] = fn
+        self.chart_states = {k: {int(i): n for i, n in v.items()}
+                             for k, v in self.manifest.get("chart_states", {}).items()}
+        self._initialized = False
 
         n = ctypes.c_uint.in_dll(self.lib, "sil_signal_count").value
         table = (_Sig * n).in_dll(self.lib, "sil_signals")
@@ -79,9 +106,20 @@ class Firmware:
     def reset(self):
         ctypes.memmove(self._par_addr, self._par_initial, len(self._par_initial))
         self.lib.MdlApp_initialize()
+        self._initialized = True
 
     def step(self):
+        if not self._initialized:
+            raise RuntimeError("step() before reset(): MdlApp_initialize() has not run")
+        bad = self.lib.sil_fp_env_violation()
+        if bad:
+            raise RuntimeError(f"floating-point environment changed under the firmware "
+                               f"(MXCSR FTZ/DAZ or rounding): 0x{bad:08X}")
         self.lib.MdlApp_step()
+
+    def internal(self, name):
+        """Read-only internal signal (chart states, sub-steps, latches). See build.py INTERNALS."""
+        return self._internals[name]()
 
     # -- signal access ---------------------------------------------------------------
     def paths(self, prefix=""):
@@ -100,7 +138,12 @@ class Firmware:
     def __getitem__(self, path):
         addr, ct, count, code = self._lookup(path)
         arr = (ct * count).from_address(addr)
-        vals = [bool(v) if code == "?" else v for v in arr]
+        vals = list(arr)
+        if code == "?":
+            for v in vals:
+                if v not in (0, 1):
+                    raise ValueError(f"{path} holds {v}, which the firmware reads as a 1-bit value")
+            vals = [bool(v) for v in vals]
         return vals[0] if count == 1 else vals
 
     def __setitem__(self, path, value):
@@ -111,8 +154,25 @@ class Firmware:
         value = list(value)
         if len(value) != count:
             raise ValueError(f"{path} takes {count} values, got {len(value)}")
-        for i, v in enumerate(value):
-            arr[i] = int(v) if code in "bBhHiIe?" else float(v)
+        conv = []
+        for v in value:
+            if isinstance(v, (str, bytes)):
+                raise TypeError(f"{path}: {v!r} is not numeric")
+            if code == "?":
+                conv.append(1 if v else 0)
+            elif code in _INT_RANGE:
+                if isinstance(v, float) or (hasattr(v, "dtype") and v.dtype.kind == "f"):
+                    if float(v) != int(v):
+                        raise ValueError(f"{path} is an integer field; {v!r} would be truncated")
+                iv = int(v)
+                lo, hi = _INT_RANGE[code]
+                if not lo <= iv <= hi:
+                    raise OverflowError(f"{path}: {iv} is outside [{lo}, {hi}] and would wrap")
+                conv.append(iv)
+            else:
+                conv.append(float(v))
+        for i, v in enumerate(conv):
+            arr[i] = v
 
     # -- enums -----------------------------------------------------------------------
     def enum_value(self, enum, name):

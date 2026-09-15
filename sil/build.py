@@ -140,6 +140,56 @@ def inhibit_bits(mdlapp_c):
     return bits, masks
 
 
+def chart_state_names(mdlapp_c, chart_tag):
+    """MdlApp_IN_* constants of one chart: index -> state name. The generated code emits
+    a block per chart headed /* Named constants for Chart: '<Sx>/Name' */."""
+    t = mdlapp_c.read_text(encoding="latin-1")
+    i = t.find(f"/* Named constants for Chart: '{chart_tag}' */")
+    if i < 0:
+        raise SystemExit(f"[build] no named-constant block for {chart_tag}")
+    j = t.find("/* Named constants", i + 10)
+    names = {}
+    # Long names get a truncated prefix (MdlA_IN_..., MdlAp_IN_...); names that collide
+    # across charts get a 4-char random suffix (_gmki, _a01c). "_save" is a real word here.
+    for m in re.finditer(r"#define Mdl\w*?_IN_(\w+)\s+\(\(uint8_T\)(\d+)U\)", t[i:j]):
+        name = m.group(1)
+        sfx = re.search(r"_([a-z0-9]{4})$", name)
+        if sfx and sfx.group(1) != "save":
+            name = name[:sfx.start()]
+        idx = int(m.group(2))
+        if idx in names:
+            raise SystemExit(f"[build] {chart_tag}: state index {idx} defined twice ({names[idx]}, {name})")
+        names[idx] = name
+    if sorted(names) != list(range(1, len(names) + 1)):
+        raise SystemExit(f"[build] {chart_tag}: state indices not contiguous: {sorted(names)}")
+    names[0] = "NO_ACTIVE_CHILD"
+    return names
+
+
+# Internal signals exposed READ-ONLY through generated getters. Several are 1-bit
+# bitfields in MdlApp_B/DW (offsetof cannot address them), so each is a C function.
+# Names are the generated ones; a rename upstream breaks the compile, not a test.
+INTERNALS = [
+    # (getter suffix, C type returned, expression)
+    ("main_chart_state",   "unsigned int", "MdlApp_DW.bitsForTID0.is_c75_MdlApp"),
+    ("calib_chart_state",  "unsigned int", "MdlApp_DW.bitsForTID0.is_c11_MdlApp"),
+    ("positioning_step",   "int",          "(int)MdlApp_B.positioningStep"),
+    ("picking_step",       "int",          "(int)MdlApp_B.pickingStep"),
+    ("placing_step",       "int",          "(int)MdlApp_B.placingStep"),
+    ("swing_init",         "unsigned int", "MdlApp_B.bitsForTID0.isJntAngSwingInit"),
+    ("all_cups_in_contact","unsigned int", "MdlApp_B.bitsForTID0.areAllSuctionCupsInContact"),
+    ("was_panel_attached", "unsigned int", "(unsigned int)MdlApp_DW.wasPanelAttached"),
+    ("was_panel_detached", "unsigned int", "MdlApp_DW.bitsForTID0.wasPanelDetached"),
+    ("low_vertical_accuracy", "unsigned int", "MdlApp_DW.bitsForTID0.lowVerticalAccuracyState"),
+    ("enh_local_main_e",   "float", "MdlApp_B.enh_LocalMain[0]"),
+    ("enh_local_main_n",   "float", "MdlApp_B.enh_LocalMain[1]"),
+    ("enh_local_main_h",   "float", "MdlApp_B.enh_LocalMain[2]"),
+    ("enh_local_aux_e",    "float", "MdlApp_B.enh_LocalAux[0]"),
+    ("enh_local_aux_n",    "float", "MdlApp_B.enh_LocalAux[1]"),
+    ("enh_local_aux_h",    "float", "MdlApp_B.enh_LocalAux[2]"),
+]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--x1exc", type=Path, default=DEFAULT_X1EXC)
@@ -155,15 +205,26 @@ def main():
 
     structs, enums = parse_headers(sorted(shared.glob("*.h")) + [rtw / "MdlApp.h"])
     bits, masks = inhibit_bits(mdlapp_c)
-    code_auto = re.search(r"\(\(uint32_T\)status\)\s*&\s*\(\(uint32_T\)(\d+)U\)", mdlapp_c.read_text(encoding="latin-1"))
-    if code_auto and int(code_auto.group(1)) != masks["AUTO_INHIBIT_MASK"]["value"]:
-        raise SystemExit(f"[build] AUTO_INHIBIT_MASK from comments {masks['AUTO_INHIBIT_MASK']['value']} "
-                         f"!= literal in code {code_auto.group(1)}")
+    literals = [int(x) for x in re.findall(r"\(\(uint32_T\)status\)\s*&\s*\(\(uint32_T\)(\d+)U\)",
+                                           mdlapp_c.read_text(encoding="latin-1"))]
+    # The generated code tests AUTO first (MdlApp.c ~39675) then CALIB (~39679).
+    for mask, lit in zip(("AUTO_INHIBIT_MASK", "CALIB_INHIBIT_MASK"), literals):
+        if lit != masks[mask]["value"]:
+            raise SystemExit(f"[build] {mask} from comments {masks[mask]['value']} != literal in code {lit}")
+    if len(literals) < 2:
+        raise SystemExit(f"[build] expected AUTO and CALIB mask literals in MdlApp.c, found {literals}")
+    chart_states = {"main": chart_state_names(mdlapp_c, "<S5>/Chart"),
+                    "calib": chart_state_names(mdlapp_c, "<S20>/CalibStepMgr")}
+    # Chart state names are NOT the CalibStep enum names (the chart's entry actions write
+    # calibStep = CalibStep.X; its own state names differ: Standby vs CalibStandby, and two
+    # upstream spellings ForkUpPntFront_stb / SwingPose1_LeBreak). Record, do not fail:
+    # y.calibStep is the authoritative progress signal, the chart state is a debug aid.
+    calib_name_mismatch = sorted(set(chart_states["calib"].values()) - set(enums["CalibStep"]) - {"NO_ACTIVE_CHILD"})
 
     (OUT / "wordsize_shim.h").write_text(SHIM)
     lines = [
         "/* GENERATED by sil/build.py from X1Exc headers. Do not edit. */",
-        "#include <stddef.h>", '#include "MdlApp.h"', "",
+        "#include <stddef.h>", "#include <fenv.h>", "#include <xmmintrin.h>", '#include "MdlApp.h"', "",
         "typedef struct { const char *path; unsigned char base; unsigned char type;",
         "                 unsigned int count; unsigned long offset; unsigned int elem_size; } sil_sig_t;",
         "",
@@ -192,11 +253,25 @@ def main():
         "  switch (b) { case 0: return sizeof(MdlApp_U); case 1: return sizeof(MdlApp_Y); case 2: return sizeof(parLocalTest); }",
         "  return 0;",
         "}",
-    ]
+        "",
+        "/* Floating-point environment guard. A physics runtime in the same process (Isaac Sim /",
+        "   PhysX) may enable flush-to-zero / denormals-are-zero or change rounding; that would",
+        "   silently change the firmware's filters. 0 = OK, else the offending MXCSR bits | 1<<31",
+        "   when rounding is not to-nearest. */",
+        "unsigned int sil_fp_env_violation(void) {",
+        "  unsigned int bad = _mm_getcsr() & 0x8040u;",
+        "  if (fegetround() != FE_TONEAREST) bad |= 0x80000000u;",
+        "  return bad;",
+        "}",
+        "",
+    ] + [f"{ctype} sil_int_{name}(void) {{ return {expr}; }}" for name, ctype, expr in INTERNALS]
     table_c = OUT / "sil_table.c"
     table_c.write_text("\n".join(lines) + "\n")
 
-    flags = ["-O2", "-fPIC", "-w", "-ffp-contract=off", "-include", str(OUT / "wordsize_shim.h"),
+    # -w silences the generated code's noise, but these two stay errors: a regeneration with a
+    # missing math prototype would otherwise return int-typed floats without a word.
+    flags = ["-O2", "-fPIC", "-w", "-Werror=implicit-function-declaration", "-Werror=int-conversion",
+             "-ffp-contract=off", "-include", str(OUT / "wordsize_shim.h"),
              f"-I{rtw}", f"-I{shared}"]
     sources = [mdlapp_c] + sorted(shared.glob("*.c")) + [table_c]
     objs = []
@@ -237,6 +312,9 @@ def main():
         "enums": {k: v for k, v in enums.items()},
         "inhibit_bits": bits,
         "inhibit_masks": masks,
+        "chart_states": chart_states,
+        "calib_chart_names_not_in_enum": calib_name_mismatch,
+        "internals": [[n, t] for n, t, _ in INTERNALS],
         "sample_time_s": 0.01,
     }
     (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2))
