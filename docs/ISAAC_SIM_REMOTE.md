@@ -412,6 +412,9 @@ docker exec $C /isaac-sim/python.sh $W/scripts/check_stability.py $W/assets/ecr8
 Isaac Sim 자체가 `carb::tasking::TaskGroup::~TaskGroup(): Destroying busy TaskGroup!` 로 abort 할 때가 있다
 (09-14 에도 재현). 로그에 `[usd] PhysicsFixedJoint ...` 요약이 다 찍힌 뒤라면 **파일은 정상**이다.
 확실히 하려면 USD 를 열어 관절 수와 `physxJoint:maxJointVelocity` 를 확인한다.
+**`physxJoint:jointFriction` 은 전부 0 이어야 한다** (09-15). PhysX 는 이 값을 N·m 가 아니라 조인트 구속력에 곱하는 계수로 쓰고,
+예전 값 10 은 집 전체 하중을 받는 스윙 조인트를 잠갔다 (`ecr88_dynamics.xacro` 의 `dyn_friction` 주석).
+`grep -rh jointFriction assets/ecr88/usd/*_pkg --include=physx.usda | sort | uniq -c`
 
 기대값 (09-14): `check_stability.py` 가 **10 개 관절** 을 보고 `미수렴 0개 / 10`.
 `merge_fixed_joints` 는 기본 OFF — 켜면 `contact_surface_link`, `gnss_*_link`, IMU·카메라 마운트 프레임이 사라진다.

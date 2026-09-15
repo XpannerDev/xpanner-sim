@@ -17,6 +17,9 @@ JOINT MAPPING (plant name -> URDF joint; sign identical, verified in sil/tests/t
     the firmware's input-link rate is converted to an output-link rate with the firmware's own four-bar
     ratio, and the input-link angle is read back as kinematics.fourbar_input(bucket angle).
 
+JOINT FRICTION is zeroed on the six driven joints (configure_drives): PhysX reads it as a coefficient on the joint
+constraint force, and the importer copied the URDF's 10 "N.m" into it, which locks the swing.
+
 VELOCITY DRIVE GAINS (GUESS): force = kd * (v_target - v), capped by the URDF effort. A hydraulic
 axis is a flow source, so a stiff velocity loop is the closer analogue than a position drive; the
 residual gravity drift is effort/kd (boom ~3e4 N.m / 1e8 -> 3e-4 rad/s), which the firmware's
@@ -61,6 +64,14 @@ class IsaacPlant(KinematicPlant):
             kps[0, i] = 0.0
             kds[0, i] = self.kd[k]
         self.art.set_gains(kps=kps, kds=kds)
+        # PhysX joint friction is a coefficient on the joint's constraint force. USDs built before the asset fix
+        # (ecr88_dynamics.xacro dyn_friction) carry 10 and the swing joint, loaded by the whole house, cannot turn.
+        fr = self.art.get_friction_coefficients()
+        fr = np.asarray(fr.numpy() if hasattr(fr, "numpy") else fr, float).reshape(1, -1).copy()
+        self.friction_before = {k: float(fr[0, i]) for k, i in self.idx.items()}
+        for i in self.idx.values():
+            fr[0, i] = 0.0
+        self.art.set_friction_coefficients(fr)
 
     def push_pose(self):
         """Put the articulation at self.q (after world.reset() and set_hardware())."""

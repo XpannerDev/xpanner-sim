@@ -442,7 +442,11 @@
   <xacro:property name="eff_rotator"  value="10000.0"/>   <!-- CLASS-TYPICAL, NO SOURCE [L64]  tiltrotator rotation torque for the 8-12 t class. -->
   <xacro:property name="eff_inp_link" value="${cyl_relief_pa * pi / 4 * cyl_bkt_bore * cyl_bkt_bore * lenInpLink}"/>
                                   <!-- DERIVED from PUBLISHED [L62]  = 62 076 N.m. CORRECTED 2026-09-11: this was 70 069 N.m, computed from an 85 mm bucket bore taken as CLASS-TYPICAL. The parts catalogue publishes 80 mm, so the old value was 11 % too high. 29.4 MPa x pi/4 x (80 mm)^2 = 147.8 kN, x lenInpLink 0.42 m. -->
-  <xacro:property name="eff_conn_rod" value="1.0"/>       <!-- GUESS, TOKEN [L63]  idler and the cut member of the 4 bar. No actuator. Do not read joint torque off this branch. -->
+  <xacro:property name="eff_conn_rod" value="200.0"/>     <!-- GUESS [L63]  idler and the cut member of the 4 bar. No actuator. Do not read joint torque off this branch.
+       2026-09-15: was a 1 N.m token. The joint friction coefficient (dyn_friction 10) had been locking this free rod;
+       at friction 0 a 1 N.m drive cannot hold its own weight (16 kg x 9.81 x 0.2 m = 31 N.m) and the rod swung as a
+       pendulum on the input link (check_stability: p-p 0.24 rad, still 0.08 rad at the end). 200 N.m lets the
+       importer's position drive hold it at its opening angle, which is what the friction lock did. -->
   <xacro:property name="eff_outp_link" value="${eff_bucket}"/> <!-- ALIAS  output_link IS the bucket_joint child, so it is the same joint and the same effort. -->
 
   <!-- ============================================================================
@@ -571,7 +575,14 @@
        and small enough not to freeze the 1 N.m dressing branch.
        ============================================================================ -->
   <xacro:property name="dyn_damping"  value="50.0"/>      <!-- GUESS [L69]  N.m.s/rad, solver hygiene only. -->
-  <xacro:property name="dyn_friction" value="10.0"/>      <!-- GUESS [L69]  N.m, solver hygiene only. -->
+  <!-- dyn_friction MUST stay 0. The Isaac URDF importer writes <dynamics friction> to
+       physxJoint:jointFriction, which PhysX treats as a UNITLESS COEFFICIENT on the joint's
+       constraint force, not as N.m. At 10 the swing joint, which carries the whole house,
+       was locked: a 0.3 rad/s velocity target moved it 0.06 deg in 1 s and a 22.9 kN.m drive
+       delivered 6 N.m (2026-09-15, first firmware swing in Isaac). Boom and arm still moved,
+       so it went unnoticed until the house had to turn. Coulomb friction of a hydraulic axis
+       belongs in the SIL valve model, like the damping note above. -->
+  <xacro:property name="dyn_friction" value="0.0"/>       <!-- [L69] 0 by design, see above (was GUESS 10 N.m) -->
 
   <!-- ============================================================================
        [6]  CENTRE OF MASS [m] and INERTIA TENSOR [kg.m^2]
