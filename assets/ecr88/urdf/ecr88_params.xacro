@@ -579,12 +579,17 @@
     <xacro:property name="lenToCylLrgBkt"      value="1.525"   scope="global"/>
     <xacro:property name="lenToCylLrgBkt2"     value="1.441"   scope="global"/>
     <xacro:property name="angCylLrgBkt"        value="${-pi/180*165.8}" scope="global"/>
-    <xacro:property name="distAttToProbeX"     value="0.35"    scope="global"/>
-    <xacro:property name="distAttToProbeZ"     value="-0.572"  scope="global"/>
+    <!-- 2026-09-15: suction head offsets are the FIRMWARE's for this unit. ECR88D_ShortArm.m:173-174
+         (the 1.7 m unit the repo's binary is compiled with) carries (0.255, 0, -0.57) and
+         (0.1, 0, -0.262) - the sheet's 신규흡착기 values - while the sheet's 기장 column still has
+         the older head (0.35/-0.572, 0.1/-0.264). OEM-FIRMWARE beats the sheet. Found by the
+         Isaac step-28 SIL run: the tool sat 92 mm off the firmware's contact surface. -->
+    <xacro:property name="distAttToProbeX"     value="0.255"   scope="global"/> <!-- OEM-FIRMWARE ShortArm -->
+    <xacro:property name="distAttToProbeZ"     value="-0.57"   scope="global"/> <!-- OEM-FIRMWARE ShortArm -->
     <xacro:property name="distProbeToContactSurfaceX" value="0.1"    scope="global"/>
-    <xacro:property name="distProbeToContactSurfaceZ" value="-0.264" scope="global"/>
-    <xacro:property name="distAttToContactSurfaceX"   value="0.45"   scope="global"/>
-    <xacro:property name="distAttToContactSurfaceZ"   value="-0.836" scope="global"/>
+    <xacro:property name="distProbeToContactSurfaceZ" value="-0.262" scope="global"/> <!-- OEM-FIRMWARE ShortArm -->
+    <xacro:property name="distAttToContactSurfaceX"   value="0.355"  scope="global"/>
+    <xacro:property name="distAttToContactSurfaceZ"   value="-0.832" scope="global"/>
     <xacro:property name="fork_chain_valid"    value="true"    scope="global"/>
     <xacro:property name="angForkUpLimit"      value="${-pi/180*16.3246}" scope="global"/> <!-- OEM-FIRMWARE ECR88D_ShortArm.m:210 -->
     <xacro:property name="distPanelTopToLiftPosnX" value="-3.0" scope="global"/> <!-- OEM-FIRMWARE ECR88D_ShortArm.m:178 -->

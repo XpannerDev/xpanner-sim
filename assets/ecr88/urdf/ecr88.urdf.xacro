@@ -214,6 +214,9 @@
   <!-- Front fork carriage and the stack of modules riding on it. This is how the
        machine actually feeds itself, so it is on by default. -->
   <xacro:arg name="model_fork"          default="true"/>
+  <!-- The module stack on the fork. Off for CalibForkRefPose (step 28), which is recorded with
+       the tool held against the BARE backrest, where the stack would otherwise be. -->
+  <xacro:arg name="model_panel_stack"   default="true"/>
   <!-- Candidate camera/lidar mount frames. Zero mass, no geometry beyond a marker. -->
   <xacro:arg name="model_sensor_mounts" default="true"/>
   <!-- The five CAN1 IMU frames. On by default: they carry calibrated data, they are
@@ -1016,8 +1019,14 @@
   <joint name="tilt_mount_joint" type="fixed">
     <parent link="output_link"/>
     <child  link="tilt_mount_link"/>
+    <!-- angTiltMntToTilt is applied HERE, on the tilt mount, not on tilt_joint. The firmware
+         composes tiltMnt = outpLink (+) Ry(angOutpLinkToTiltMnt + angTiltMntToTilt) and only then
+         translates by distTiltMntToTilt in that rotated frame (MdlApp.c:12508, :12659). Rotating
+         after the translation, as this file used to, put tilt_link 10.8 mm away from where the
+         firmware computes it (0.356 m lever x 1.736 deg) - found by the first Isaac SIL run
+         (scripts/sil_isaac_step28.py), link-by-link against MdlApp_Y.links. -->
     <origin xyz="${distOutpLinkToTiltMnt_x} ${distOutpLinkToTiltMnt_y} ${distOutpLinkToTiltMnt_z}"
-            rpy="0 ${angOutpLinkToTiltMnt} 0"/>
+            rpy="0 ${angOutpLinkToTiltMnt + angTiltMntToTilt} 0"/>
   </joint>
 
   <!-- TILT. Axis ASSUMED +X (T3): a tiltrotator tilts the tool sideways, i.e. rolls
@@ -1032,7 +1041,7 @@
     <parent link="tilt_mount_link"/>
     <child  link="tilt_link"/>
     <origin xyz="${distTiltMntToTilt_x} ${distTiltMntToTilt_y} ${distTiltMntToTilt_z}"
-            rpy="0 ${angTiltMntToTilt} 0"/>
+            rpy="0 0 0"/>
     <axis xyz="1 0 0"/>
     <limit lower="${lim_tilt_lower}" upper="${lim_tilt_upper}"
            effort="${eff_tilt}" velocity="${vel_tilt}"/>
@@ -1247,6 +1256,7 @@
          firmware has no stack model - it commands the same fork-relative panelTop every
          cycle and relies on the all-four-cups contact to stop the approach - so the
          OUTER FACE is what has to be right, and it is drawn at panelTop. -->
+    <xacro:if value="$(arg model_panel_stack)">
     <link name="panel_stack_link">
       <xacro:inertial_box mass="${m_panel * panels_per_stack}"
                           x="${stack_depth}" y="${LenPLWidth}" z="${LenPanelHeight}"
@@ -1261,6 +1271,7 @@
       <child  link="panel_stack_link"/>
       <origin xyz="0 0 0" rpy="0 0 0"/>
     </joint>
+    </xacro:if>
 
     <!-- panelTop: the firmware's pick frame. contact_surface must reach this pose. -->
     <link name="panel_top_link">

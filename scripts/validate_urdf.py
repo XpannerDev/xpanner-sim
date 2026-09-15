@@ -131,14 +131,29 @@ FIRMWARE_OVERRIDES = {
         "distAntMainToChs": (0.57, -0.087, -1.345),
     },
     "lengths": {},
+    # Unit-specific firmware values. ECR88D_ShortArm.m (the 1.7 m unit, compiled into the repo's
+    # binary) carries the new suction head; the sheet's 기장 column still has the old one. The
+    # Isaac step-28 SIL run found this as a 92 mm contact-surface offset.
+    "by_variant": {
+        "ECR88_KIJANG": {
+            "distAttToProbe": (0.255, 0.0, -0.57),
+            "distProbeToContactSurface": (0.1, 0.0, -0.262),
+            "distAttToContactSurface": (0.355, 0.0, -0.832),   # the sum of the two above
+        },
+    },
 }
 
 
-def apply_firmware():
+def apply_firmware(variant=None):
     """Fold the firmware's values over the sheet. Call AFTER apply_variant."""
     GT_OFFSETS.update(FIRMWARE_OVERRIDES["offsets"])
     GT_LENGTHS.update(FIRMWARE_OVERRIDES["lengths"])
-    return len(FIRMWARE_OVERRIDES["offsets"]) + len(FIRMWARE_OVERRIDES["lengths"])
+    extra = dict(FIRMWARE_OVERRIDES["by_variant"].get(variant, {}))
+    if "distAttToContactSurface" in extra:          # a sum, checked by GT_SUM_CHECK, not a joint origin
+        global GT_SUM_CHECK
+        GT_SUM_CHECK = (GT_SUM_CHECK[0], extra.pop("distAttToContactSurface"), GT_SUM_CHECK[2])
+    GT_OFFSETS.update(extra)
+    return len(FIRMWARE_OVERRIDES["offsets"]) + len(FIRMWARE_OVERRIDES["lengths"]) + len(extra)
 
 
 def read_variant_from_params(urdf_dir):
@@ -1475,7 +1490,7 @@ def main(argv=None) -> int:
         print(f"[SKIP] unknown machine_variant {variant!r}; ground truth left at 기장",
               file=sys.stderr)
         variant, variant_src = "ECR88_KIJANG", f"fallback (unknown {variant})"
-    n_fw = apply_firmware()
+    n_fw = apply_firmware(variant)
 
     log = Log()
     print("=" * 108)

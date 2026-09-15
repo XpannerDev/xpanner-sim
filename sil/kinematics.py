@@ -149,6 +149,34 @@ def fourbar_output(fw, q_inp):
     return math.atan2(math.sin(q), math.cos(q))
 
 
+def fourbar_input(fw, q_outp, lo=math.radians(-179.0), hi=math.radians(14.0), tol=1e-10):
+    """Inverse of fourbar_output: the input-link angle (arm-relative) whose firmware four-bar
+    solution is q_outp. For a plant whose own input link is not a real closed loop (the URDF's
+    input_link is a 1:1 mimic placeholder), this is the attitude the bktImu board on a REAL
+    four-bar would have. Bisection on the monotonic branch below the +14.2 deg dead centre;
+    None if q_outp is outside it."""
+    f = lambda qi: fourbar_output(fw, qi)
+    samples = [lo + (hi - lo) * k / 400 for k in range(401)]
+    vals = [(qi, f(qi)) for qi in samples]
+    for (a, fa), (b, fb) in zip(vals, vals[1:]):
+        if fa is None or fb is None:
+            continue
+        if (fa - q_outp) * (fb - q_outp) <= 0 and abs(fb - fa) < math.pi:
+            for _ in range(200):
+                m = 0.5 * (a + b)
+                fm = f(m)
+                if fm is None:
+                    break
+                if (fa - q_outp) * (fm - q_outp) <= 0:
+                    b, fb = m, fm
+                else:
+                    a, fa = m, fm
+                if b - a < tol:
+                    break
+            return 0.5 * (a + b)
+    return None
+
+
 def link_frames(fw, R_chs=None, q_bm1=0.0, q_arm=0.0, q_inp=0.0, q_tilt=0.0):
     """World orientation of each IMU-carrying link for a machine pose, in firmware geometry.
     Boom swing is pinned at 0 by the firmware (MdlApp.c:12411); hasBm2 = false."""
