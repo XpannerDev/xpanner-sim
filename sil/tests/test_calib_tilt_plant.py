@@ -16,7 +16,8 @@ chart_2291 CalcImuMntOri, chart_2383 / chart_2338 SetTblReqSpdToActCmd; generate
   vz = cross(vx, vy), all normalised; imuMntOri_tilt = [vx vy vz] (chart_2291 l.331-357, MdlApp.c:43953-44010).
   So vx is the tilt axis in board coordinates (any three distinct points on the gravity circle give it) and vy is
   the horizontal perpendicular at the REFERENCE pose: the rebuilt mount is the true board only if the tilt link's
-  Y axis was horizontal when the calibration started (TestTiltZeroIsTheStartPose).
+  Y axis was level to GRAVITY while TiltPntRef_log averaged accRef, i.e. the tool itself was level. Machine roll,
+  jack-up pitch and house swing matter only through that (TestTiltZeroIsTheToolsRollAtTheReference).
 
 RUN TIME (sim seconds; wall ~2.5 s per run at ~0.25 ms per tick)
   fixed: 5 x 8.01 s (_stb) + 3 x 1.01 s (_log) = 43.1 s
@@ -24,7 +25,7 @@ RUN TIME (sim seconds; wall ~2.5 s per run at ~0.25 ms per tick)
     percent of deadband above 20 % -- the dominant variable term
   + each leg 1 s ramp + travel / speed (at most 10.02 s, then it ends on the timeout).
   This file's main plant (deadbands 22.3 / 21.1 %): 101.7 s. The unit's own stored valve (19.5 / 25.7 %) at the
-  default pose: 128.3 s, of which 63 s is the tiltNega staircase. Total file wall time ~20 s.
+  default pose: 128.3 s, of which 63 s is the tiltNega staircase. Total file wall time ~30 s (11 runs).
 
 WHY THE PLANT DIFFERS FROM THE STORED PARAMETERS
   The plant's tilt valve (deadband, speed) and, in most scenarios, its tilt IMU board are deliberately NOT the
@@ -36,6 +37,15 @@ the rebuilt tilt mount flip, test_valve_plant.test_calib_tilt_identifies_the_val
 
 Every calibration here runs with strict joint stops (plant.strict_limits): the +-45 deg tilt limit is an ESTIMATE
 (sil/plant.py) and a leg that ended on it would still "succeed" in the firmware.
+
+u.isMachCalib = 1 in every run. ASSUMPTION: the tablet holds the service-mode flag while calibrating (open question
+for David, test_calibration_entry.test_calib_inhibit_mask_only_bites_when_isMachCalib_is_set). It only arms the
+calibration inhibit, isCalibInhibited = (status & 13976) != 0 && isMachCalib (MdlApp.c:39679-39680); on a healthy
+machine it blocks nothing, and with it set a run that passes shows no in-mask inhibit was raised.
+
+LABELS used below: "FW" / "FINDING (firmware)" = read in the source, holds for any plant; "PLANT-DEPENDENT" = the
+number or the effect depends on a plant GUESS (the valve line near the deadband, the quasi-static noise model, the
++-45 deg stop, the pose) and pins this plant, not the firmware.
 
 Run:  cd xpanner-sim && python3 -m unittest sil.tests.test_calib_tilt_plant -v
 """
@@ -55,13 +65,13 @@ F32 = lambda v: float(np.float32(v))
 # --- firmware constants (SysPar.m; generated as literals) -----------------------------------------------------
 STB_TICKS = 801             # CntCalib_stb 800 (SysPar.m:102): entry tick + 800 during ticks (test_calibration_entry)
 LOG_TICKS = 101             # CntCalib_log 100 (SysPar.m:103)
-TIMEOUT_TICKS = 1002        # _ToPnt [... || cnt > CntCalib_timeout 1000] (SysPar.m:104, MdlApp.c:36318, :35493)
+TIMEOUT_TICKS = 1002        # _ToPnt [... || cnt > CntCalib_timeout 1000] (SysPar.m:104, MdlApp.c:36320, :35494)
 STAIR_TICKS = 200           # CntCalibStepFindingMin (SysPar.m:105, MdlApp.c:44565)
 STAIR_STEP = 0.2            # StepFindingMin_size, % (SysPar.m:110)
 STAIR_START = 20.0          # PropVlvCmdInitOffs.tilt* (SysPar.m:174-175)
 ONSET_DLY_CMP = 0.5         # PropVlvCmdMotionOnsetDlyCmp (SysPar.m:134, MdlApp.c:45610/45618 literal 0.5F)
 REF_CMD = 70.0              # PropVlvRefCmd.tiltPosi/tiltNega (SysPar.m:151-152)
-ANG_PNT1, ANG_PNT2 = 35.0 * DEG, 70.0 * DEG     # AngTiltPnt1/2 (SysPar.m:124-125; MdlApp.c:36318 0.610865235F)
+ANG_PNT1, ANG_PNT2 = 35.0 * DEG, 70.0 * DEG     # AngTiltPnt1/2 (SysPar.m:124-125; MdlApp.c:36320 0.610865235F)
 IDENTIFIED_X1 = F32(0.01)   # knee a calibration writes (chart_2338 l.103-106, MdlApp.c:45777)
 MIN_TBL_REQ_SPD = F32(0.002)  # SysPar.m:112, MdlApp.c:45778 fmaxf(0.002F, ...)
 # PropVlvRefCmd of every port (SysPar.m:136-156): Y[2] of every table any calibration save writes.
@@ -71,7 +81,10 @@ REF_CMD_ALL = dict(trvlLeFwd=60.0, trvlLeRev=60.0, trvlRiFwd=60.0, trvlRiRev=60.
 
 TILT_STATES = ["TiltPntRef_stb", "TiltPntRef_log", "TiltPosiMin", "TiltPosiMin_stb", "TiltPosiToPnt1",
                "TiltPnt1_stb", "TiltPnt1_log", "TiltNegaMin", "TiltNegaMin_stb", "TiltNegaToPnt2",
-               "TiltPnt2_stb", "TiltPnt2_log", "Tilt_save"]       # chart_1210 SSIDs 584, 609 ... 602
+               "TiltPnt2_stb", "TiltPnt2_log", "Tilt_save"]
+# chart_1210 (<S179> in MdlApp.c) STATE SSIDs, same order: 240, 233, 241, 252, 210, 218, 219, 223, 224, 263, 254, 282,
+# 231. The transitions INTO them are 584 (from junction 95, [autoCtrl_CurrStep == CalibTilt]), 609, 640, 610, 598,
+# 599, 595, 635, 588, 639, 624, 603, 602.
 
 # --- scenario choices (NOT from the firmware) ------------------------------------------------------------------
 # ASSUMPTION (pose): arm 70 instead of the harness rest pose's 90 puts the tilt axis 1.9 deg below horizontal, so
@@ -146,10 +159,12 @@ class Recorder:
 
 def run_calib_tilt(plant, setup=None, extra=()):
     """Boot a healthy machine with `plant` publishing every sensor, run CalibTilt from NoTarget to completion.
-    setup(h) runs after nominal_inputs, before the first tick. Returns (h, rec, emu, ticks from the jump)."""
+    u.isMachCalib = 1 (ASSUMPTION, module docstring). setup(h) runs after nominal_inputs, before the first tick.
+    Returns (h, rec, emu, ticks from the jump)."""
     plant.strict_limits = True
     rec, emu = Recorder(plant), SaveHandshake()
     h = Harness(plant=[plant, rec, *extra, emu]).reset().nominal_inputs()
+    h.fw["u.isMachCalib"] = 1
     h.gnss_rtk_fixed()                       # not a CalibTilt gate (spec A7: steps 20-26 have none); healthy machine
     if setup is not None:
         setup(h)
@@ -176,17 +191,13 @@ class TestCalibTiltEndToEnd(unittest.TestCase):
         cls.stored_tables = vlv.read_tables(h0.fw)
         cls.hw_mount = cls.compiled_mount @ kin.Rx(cls.BOARD_ROLL)
         plant = KinematicPlant(q0=POSE, degrees=True, hardware={"imuTilt": cls.hw_mount}, **VALVE)
-        # the tablet procedure's service flag (test_calibration_entry: isCalibInhibited ANDs it, MdlApp.c:39679)
         boot = {}
-
-        def setup(h):
-            h.fw["u.isMachCalib"] = 1
 
         def before(h):
             if h.tick_count == 3 and not boot:
                 boot["tilt_err"] = h.fw["y.jnts.TiltMntToTilt.q"] - plant.q["tilt"]
 
-        h, rec, emu, ticks = run_calib_tilt(plant, setup=setup, extra=[before])
+        h, rec, emu, ticks = run_calib_tilt(plant, extra=[before])
         fw = h.fw
         cls.plant, cls.rec, cls.emu, cls.ticks = plant, rec, emu, ticks
         cls.boot_tilt_err = boot["tilt_err"]
@@ -206,9 +217,10 @@ class TestCalibTiltEndToEnd(unittest.TestCase):
         cls.tilt_err_par = fw["y.jnts.TiltMntToTilt.q"] - plant.q["tilt"]
 
     def test_completes_through_all_thirteen_states_in_about_100_s(self):
-        # FW: chart_1210 SSIDs 584 -> 609 -> 640 -> 610 -> 598 -> 599 -> 595 -> 635 -> 588 -> 639 -> 624 -> 603 -> 602,
-        # exit J260 -> Standby on the save ack (SSID 346); spec A7 success = calibStep back to CalibStandby and
-        # autoCtrl_CurrStep back to NoTarget.
+        # FW: chart_1210 states 240 -> 233 -> 241 -> 252 -> 210 -> 218 -> 219 -> 223 -> 224 -> 263 -> 254 -> 282 -> 231
+        # (TILT_STATES), entered through transitions 584 -> 609 -> ... -> 602; Tilt_save (231) leaves through the shared
+        # junction chain to J260 and transition 346 -> Standby (188) on the save ack (MdlApp.c:36383-36398); spec A7
+        # success = calibStep back to CalibStandby and autoCtrl_CurrStep back to NoTarget.
         self.assertEqual(self.rec.sequence(), ["CalibStandby"] + TILT_STATES + ["CalibStandby"])
         self.assertEqual(self.final["curr"], "NoTarget")
         self.assertFalse(self.final["calibrating"])
@@ -222,13 +234,13 @@ class TestCalibTiltEndToEnd(unittest.TestCase):
         for s in ("TiltPntRef_log", "TiltPnt1_log", "TiltPnt2_log"):
             self.assertEqual(d[s], LOG_TICKS, s)
         self.assertEqual(d["Tilt_save"], 2, "handshake acks on the next tick (SaveHandshake)")
-        # both legs ended on ANGLE, not on the silent 10 s timeout (MdlApp.c:36318, :35493) ...
+        # both legs ended on ANGLE, not on the silent 10 s timeout (MdlApp.c:36320, :35494) ...
         self.assertLess(d["TiltPosiToPnt1"], TIMEOUT_TICKS - 1)
         self.assertLess(d["TiltNegaToPnt2"], TIMEOUT_TICKS - 1)
         # ... at the joint angle the gravity legs predict: Pnt1 is 35 deg of gravity from the REFERENCE (not from where
         # the staircase left the tool), Pnt2 70 deg from the Pnt1 LOG pose; tiltPosi raises q, tiltNega lowers it
         # (chart_3055 l.147-152 -> valves.AXIS_PORTS). Overshoot <= 4 ticks of travel at the leg speed: the sensors
-        # lag the plant by one tick, the guard reads angCalib through Delay4 (MdlApp.c:36318), the state changes one
+        # lag the plant by one tick, the guard reads angCalib through Delay4 (MdlApp.c:36320), the state changes one
         # tick later, and this recorder samples one tick after that (measured 0.17 / 0.27 deg = 1.8 / 2.8 ticks).
         fw_like = self.plant.hardware
         off = fw_like["par.parKin.angOutpLinkToTiltMnt"] + fw_like["par.parKin.angTiltMntToTilt"]
@@ -257,17 +269,21 @@ class TestCalibTiltEndToEnd(unittest.TestCase):
         self.assertEqual(sum(d[s] for s in TILT_STATES), fixed + variable)
         # from the jump: request tick + StartPause pulse (2 ticks) precede TiltPntRef_stb
         self.assertLessEqual(abs(self.ticks - (fixed + variable)), 3)
-        # measured 10171 ticks from the jump = 101.7 s: 43.1 s fixed, 45.8 s of staircase (onset 22.8 % after 28.95 s,
-        # 21.6 % after 16.83 s), 12.8 s of legs (4.77 s / 8.03 s), 3 ticks of request + button
+        # PLANT-DEPENDENT (measured) 10171 ticks from the jump = 101.7 s: 43.1 s fixed (FW), 45.8 s of staircase (onset
+        # 22.8 % after 28.95 s, 21.6 % after 16.83 s), 12.8 s of legs (4.77 s / 8.03 s), 3 ticks of request + button
         self.assertGreater(self.ticks, 95 * 100)
         self.assertLess(self.ticks, 110 * 100)
 
     def test_identified_minimum_command_is_the_plants_deadband_not_the_stored_one(self):
         # FW: onset = |angle(accRef or accPnt1, raw acc)| > 0.5 deg on one sample, rising edge (chart_2316 l.78-79,
         # 91-104; MdlApp.c:44276); chart_2338 l.63-64 stores propVlvCmd - 0.5 on the SAME tick (MdlApp.c:45606-45618)
-        # while CalibStepMgr sees the pulse one tick later through Delay1 (MdlApp.c:36152, :46182).
-        # PLANT: no motion below the deadband (valves.port_speed), 0.001 rad/s at it, so the 0.5 deg onset needs a
-        # few 0.2 % steps of creep -- measured 2.5 steps, which the 0.5 % compensation cancels exactly here.
+        # while CalibStepMgr sees the pulse one tick later through Delay1 (guards MdlApp.c:36149 tiltPosi, :35312
+        # tiltNega; Delay1 update :46182). The firmware claim is the +-0.5 % band: Y[1] = onset - 0.5 with the onset at
+        # or above the valve's true deadband.
+        # PLANT-DEPENDENT: how far above the deadband the onset lands. The plant has no motion below the deadband
+        # (valves.port_speed) and creeps from the stored X[1] = 0.001 rad/s along a GUESSed linear line above it, so
+        # the 0.5 deg onset needs a few 0.2 % steps of creep -- measured 2.5 steps (22.8 / 21.6 %), which the 0.5 %
+        # compensation cancels exactly only because of that line. The two exact pins at the end are this plant's.
         for port in ("tiltPosi", "tiltNega"):
             with self.subTest(port=port):
                 db = self.plant.deadband[port]
@@ -279,7 +295,9 @@ class TestCalibTiltEndToEnd(unittest.TestCase):
                 self.assertGreaterEqual(Y[1], db - ONSET_DLY_CMP - 1e-4)
                 self.assertLessEqual(Y[1], db + ONSET_DLY_CMP + 1e-4)
                 self.assertGreater(abs(Y[1] - stored), 1.0, f"not the stored {stored} %")
-        self.assertAlmostEqual(self.snap["y.tblReqSpdToActCmd.tiltPosi_Y"][1], 22.3, places=4)   # measured
+        # PLANT-DEPENDENT regression pins (not a firmware property; 1 mg of accelerometer noise already moves the
+        # tiltNega one to 20.9 in 6 of 12 seeds)
+        self.assertAlmostEqual(self.snap["y.tblReqSpdToActCmd.tiltPosi_Y"][1], 22.3, places=4)
         self.assertAlmostEqual(self.snap["y.tblReqSpdToActCmd.tiltNega_Y"][1], 21.1, places=4)
 
     def test_identified_speed_is_the_plants_speed_at_the_reference_command(self):
@@ -307,9 +325,12 @@ class TestCalibTiltEndToEnd(unittest.TestCase):
         self.assertLess(np.abs(identified - self.hw_mount).max(), 1e-4)
         self.assertGreater(np.abs(identified - self.compiled_mount).max(), 0.15, "not the compiled mount echoed")
         self.assertAlmostEqual(self.boot_tilt_err, -self.BOARD_ROLL, delta=0.01 * DEG)
-        # FINDING (firmware): the saved mount never reaches the running model. AppCtrlIf.c:630-638 copies NVM into
-        # u.tiltImu_MntOriStored at boot, but MdlApp.c reads MdlApp_U.tiltImu_MntOriStored 0 times (grep -ac) and
-        # nothing outside the model writes parLocalTest. With the inport loaded the tilt still reads 10 deg off.
+        # FINDING (BUILD CONFIGURATION, every calibration step): the saved mount never reaches the running model IN THIS
+        # BUILD. AppCtrlIf.c:630-638 copies NVM into u.tiltImu_MntOriStored at boot, but EnTestPar = true (SysPar.m:5)
+        # drives the <S1>/Switch12 selector to parLocalTest and Coder folded the inport away (MdlApp.c:41963 "Switch
+        # generated from: <S1>/Switch12"; same for Switch6-17: parKin, all IMU mounts, rotator zero, speed tables).
+        # With the inport loaded the tilt still reads 10 deg off; only patching par applies the calibration here. An
+        # EnTestPar = false build would read the inport -- a firmware defect only if the field build ships with true.
         self.assertAlmostEqual(self.tilt_err_nvm_inport, -self.BOARD_ROLL, delta=0.01 * DEG)
         self.assertAlmostEqual(self.tilt_err_par, 0.0, delta=0.01 * DEG)
 
@@ -320,7 +341,9 @@ class TestCalibTiltEndToEnd(unittest.TestCase):
         # CalibTilt save also rewrites the tables of axes it never moved: every knee 0.001 -> 0.01, and Y[2]
         # 80 -> 70 (bm1Up/Down, armOut), 90 -> 70 (linkOut), 80 -> 100 (rotPosi/Nega), 100 -> 60 (travel), 70 -> 60
         # (bm2), blade [0 .001 80]/[0 25 80] -> [0 .01 100]/[0 .01 100] -- same X[2], different Y[2], i.e. a
-        # different speed per percent. Latent in this build only because the Stored inports are never read.
+        # different speed per percent. LATENT IN THIS BUILD because EnTestPar = true (SysPar.m:5): Switch17
+        # folds u.tblReqSpdToActCmdStored to parLocalTest, so the running model interpolates parLocalTest.reqSpdToActCmd
+        # (MdlApp.c:50843-50846) and the rewritten tables only reach NVM. LIVE in an EnTestPar = false build.
         changed_y2 = set()
         for port in vlv.PORTS:
             X, Y = self.snap[f"y.tblReqSpdToActCmd.{port}_X"], self.snap[f"y.tblReqSpdToActCmd.{port}_Y"]
@@ -349,9 +372,12 @@ class TestCalibTiltBoard(unittest.TestCase):
         # WHY: the mount rebuild uses raw accelerometer vectors only, so any board orientation comes back. The speed
         # leg does not: its peak is y.jnts.TiltMntToTilt.qDot, the x component of M_stored^T * gyro (chart_2143 rate
         # chain), so with a board error R = M_stored^T M_board the firmware reads R[0,0] x the true rate.
-        # FINDING: the identified tilt speeds are low by 1 - R[0,0] (1.5 % here); the mount is right after the
-        # rebuild, the table stays wrong until CalibTilt is run AGAIN with the corrected mount (as for the arm,
+        # FINDING (firmware, source-level; LATENT IN THIS BUILD): the identified tilt speeds are low by 1 - R[0,0]
+        # (1.5 % for this GUESSed board error); the mount is right after the rebuild, the table stays wrong until
+        # CalibTilt is run AGAIN with the corrected mount (as for the arm,
         # test_valve_plant.test_calib_arm_recovers_the_units_mount_from_a_wrong_stored_one_but_not_its_speed_table).
+        # Latent because EnTestPar = true (SysPar.m:5) folds the stored-table inport to parLocalTest (MdlApp.c:50843-50846);
+        # live in an EnTestPar = false build.
         compiled = kin.mounts_from_fw(Harness().reset().fw)["imuTilt"]
         R = kin.Rz(8.0 * DEG) @ kin.Ry(-6.0 * DEG) @ kin.Rx(12.0 * DEG)      # GUESS (test fixture)
         board = compiled @ R
@@ -380,34 +406,52 @@ class TestCalibTiltBoard(unittest.TestCase):
 
 
 # ==============================================================================================================
-class TestTiltZeroIsTheStartPose(unittest.TestCase):
+class TestTiltZeroIsTheToolsRollAtTheReference(unittest.TestCase):
     """vy = cross(vx, accRef) (chart_2291 l.341, MdlApp.c:43985) is horizontal at the REFERENCE pose, so the rebuilt
-    mount is M_board @ Rx(-phi), phi = the tilt link's roll about its own X at the reference (up in link coordinates),
-    and after the rebuild the firmware reads tilt - phi. The deck's CalibTilt preconditions (resources/
-    Sensor_and_Valve_Calibration_ProductionV1.md slides 12-13: "Roll angle = 0", "Pitch angle > 5", "Set tilt to
-    Horizontal") are therefore half load-bearing -- roll and the start tilt define the zero -- and the firmware checks
-    none of them (no machine attitude or tilt-angle guard in chart_1210 / chart_2537). The jack-up pitch changes
-    nothing: a pitch about the machine's Y keeps the tilt link's Y horizontal."""
+    mount is M_board @ Rx(-phi), phi = the tilt link's roll about its own X relative to GRAVITY while TiltPntRef_log
+    averages accRef (up in link coordinates, reference_roll), and once that mount is loaded the firmware reads
+    tilt - phi. phi is set only by whether the TOOL is level to gravity at the reference; machine roll, jack-up pitch
+    and house swing enter only through it.
 
-    CASES = (   # GUESS (test fixtures): start tilt deg, ground roll deg, ground pitch deg (URDF; -6 = nose up)
-        ("tool 6 deg off horizontal", -6.0, 0.0, 0.0),
-        ("machine rolled 3 deg", 0.0, 3.0, 0.0),
-        ("deck jack-up: nose up 6 deg, roll 0, tilt level", 0.0, 0.0, -6.0),
+    The deck's CalibTilt preconditions (resources/Sensor_and_Valve_Calibration_ProductionV1.md slide 12: "Roll angle =
+    0 & Pitch angle > 5", "Set tilt to Horizontal"; slide 13: "Use the laser or spirit level to check tilt angle
+    (horizontal at both side)") therefore come down to the spirit level. With it, Roll = 0 is redundant for step 25:
+    a machine rolled 3 deg with the tool levelled by the tilt joint gives phi = 0.0016 deg (not 0 because the tilt axis
+    sits 1.9 deg off horizontal at POSE) and the compiled mount. Without it -- "horizontal" judged against the machine,
+    here the tool square to it (tilt joint 0) -- a rolled machine moves the zero by the roll, and so does a jack-up
+    with the house swung off the pitch direction. Pitch > 5 is harmless only with the house square to the jack-up
+    (swing 0), where a pitch about the machine's Y keeps the tilt link's Y horizontal.
+
+    FW: nothing checks that the tool is gravity-level at TiltPntRef_log: no machine attitude or tilt-angle guard in
+    chart_1210 / chart_2537, and the reference accepts any pose. PROCEDURE DEPENDENCY, not a plant effect: the tool
+    is at rest for 8 s before the log, where the quasi-static accelerometer is what a real board reads."""
+
+    CASES = (   # GUESS (test fixtures): tilt joint deg, ground roll deg, ground pitch deg (URDF; -6 = nose up),
+                # house swing deg, expected phi deg
+        ("level machine, tool 6 deg off level", -6.0, 0.0, 0.0, 0.0, -6.0),
+        ("machine rolled 3 deg, tool square to the machine (tilt joint 0)", 0.0, 3.0, 0.0, 0.0, 3.0),
+        ("machine rolled 3 deg, tool spirit-levelled (tilt joint -3)", -3.0, 3.0, 0.0, 0.0, 0.0),
+        ("deck jack-up nose up 6 deg, house square (swing 0), tool square", 0.0, 0.0, -6.0, 0.0, 0.0),
+        # The house is parked at swing 90 from boot, so the swing switch is open (BIT_SWING_NOT_INIT). That bit is not
+        # in CALIB_INHIBIT_MASK 13976 (MdlApp.c:39679), and CalibTilt reads only the tilt accelerometer and the
+        # tilt-minus-outer-link gyro rate, never the swing angle.
+        ("deck jack-up nose up 6 deg, house swung 90 deg, tool square", 0.0, 0.0, -6.0, 90.0, -6.0),
     )
 
-    def test_roll_and_start_tilt_become_the_tilt_zero_but_the_jack_up_pitch_does_not(self):
+    def test_the_tools_roll_to_gravity_at_the_reference_becomes_the_tilt_zero(self):
         compiled = kin.mounts_from_fw(Harness().reset().fw)["imuTilt"]
-        for label, tilt0, roll, pitch in self.CASES:
+        for label, tilt0, roll, pitch, swing, expect_phi in self.CASES:
             with self.subTest(case=label):
-                q0 = dict(POSE, tilt=tilt0)
+                q0 = dict(POSE, tilt=tilt0, swing=swing)
                 plant = KinematicPlant(q0=q0, degrees=True, **VALVE)
                 plant.set_ground(roll=roll * DEG, pitch=pitch * DEG)
                 h, rec, emu, _ = run_calib_tilt(plant)
                 fw = h.fw
                 self.assertEqual(len(emu.saved), 1)
                 self.assertEqual(plant.limit_hits, [])
+                self.assertEqual(rec.sequence(), ["CalibStandby"] + TILT_STATES + ["CalibStandby"])
                 phi = reference_roll(rec.ref_frame)
-                expect_phi = {"tool 6 deg off horizontal": -6.0, "machine rolled 3 deg": 3.0}.get(label, 0.0)
+                # measured -6.000 / +3.000 / +0.0016 / 0.000 / -6.003 deg
                 self.assertAlmostEqual(math.degrees(phi), expect_phi, delta=0.01)
                 snap = emu.saved[0][1]
                 identified = mount(snap, "y.imuMntOri_tilt")
@@ -420,7 +464,7 @@ class TestTiltZeroIsTheStartPose(unittest.TestCase):
                 h.tick(100)
                 self.assertAlmostEqual(fw["y.jnts.TiltMntToTilt.q"] - plant.q["tilt"], -phi, delta=0.01 * DEG)
                 if expect_phi == 0.0:
-                    self.assertLess(np.abs(identified - compiled).max(), 1e-4)
+                    self.assertLess(np.abs(identified - compiled).max(), 1e-4)       # spirit-levelled: 2.9e-5
                 else:
                     self.assertGreater(np.abs(identified - compiled).max(), 0.05, "the zero moved, silently")
 
@@ -432,12 +476,22 @@ class TestCalibTiltFindings(unittest.TestCase):
         # WHY: the plant here IS the compiled unit (valve, board) at the harness rest pose (tilt axis 21.9 deg below
         # horizontal, what an operator gets without re-posing the arm). The 70 deg gravity leg is 76.4 deg of joint
         # travel; the stored tiltNega speed at 70 % is 0.135 rad/s, so it needs ~10.4 s incl. the 1 s ramp.
-        # FINDING: TiltNegaToPnt2 ends on the 10 s timeout (cnt > 1000, MdlApp.c:35493) with no alarm and the
-        # calibration saves as usual. Harmless for the mount in a noise-free plant (any three distinct points on the
-        # gravity circle give the axis; measured 1.6e-7) but the Pnt1-Pnt2 chord is shorter than designed.
-        # FINDING: the stored tiltPosi_Y[1] = 19.5 is exactly what the staircase writes when motion starts on its
-        # FIRST step (20 - 0.5); a deadband below 20 % cannot be identified -- the same 19.5 % valve reads 19.9 here
-        # (onset needs 0.5 deg of creep at 20 %, 2 steps). Run time 128 s, 63 s of it the tiltNega staircase.
+        # FINDING (firmware, source-level): a _ToPnt leg that ends on CntCalib_timeout (cnt > 1000, MdlApp.c:35494 /
+        # :36320) raises no alarm and the calibration saves as usual -- nothing checks that angCalib.tilt reached
+        # AngTiltPnt1/2 (the same holds for a leg that stops on a joint stop).
+        # PLANT-DEPENDENT: that THIS unit's 70 deg leg times out here. The 0.135 rad/s is the stored table read along
+        # the plant's GUESSed linear line between Y[1] 25.7 % and Y[2] 80 % (valves.port_speed), the travel comes from
+        # the harness rest pose, and the margin is a few percent of speed (~10.4 s against 10 s): a slightly faster
+        # valve, or the arm re-posed as in POSE, ends on angle. Harmless for the mount in a noise-free plant (any three
+        # distinct points on the gravity circle give the axis; measured 1.6e-7) but the Pnt1-Pnt2 chord is shorter
+        # than designed, which shrinks |cross(Pnt1 - Ref, Pnt2 - Ref)| and so raises the mount's noise sensitivity
+        # (geometry, not measured here).
+        # FINDING (firmware, source-level): the staircase starts at PropVlvCmdInitOffs 20 % (SysPar.m:174-175) and
+        # saves onset - 0.5, so Y[1] >= 19.5 % always: a deadband below 20 % cannot be identified. The stored
+        # tiltPosi_Y[1] sits exactly on that floor (19.5 = 20 - 0.5).
+        # PLANT-DEPENDENT: how far above the floor a sub-20 % valve reads -- the same 19.5 % valve reads 19.9 here
+        # (onset needs 0.5 deg of creep at 20 %, 2 steps, on the GUESSed creep line). Run time 128 s, 63 s of it the
+        # tiltNega staircase.
         plant = KinematicPlant()
         h, rec, emu, ticks = run_calib_tilt(plant)
         fw = h.fw
@@ -471,14 +525,21 @@ class TestCalibTiltFindings(unittest.TestCase):
         self.assertLess(ticks, 132 * 100)
 
     def test_accelerometer_noise_of_a_few_mg_makes_every_tilt_deadband_read_19_5(self):
-        # FINDING (firmware robustness): the motion-onset detector compares ONE raw accelerometer sample against the
-        # 1 s mean reference with a 0.5 deg threshold (chart_2291 l.163-166 raw acc, chart_2316 l.97-100, MdlApp.c:44276
-        # 0.00872664619F): 0.5 deg = 8.7 mg perpendicular. With per-axis white noise sigma the per-sample false-onset
-        # probability is exp(-(8.7 mg)^2 / (2 sigma^2)): 1 mg -> never, 5 mg -> 22 % per tick. Then the onset fires on
-        # the staircase's first step and BOTH deadbands are saved as 20 - 0.5 = 19.5 %, whatever the valve. The mount
-        # (1 s means) is barely affected. ASSUMPTION: white, isotropic noise (sil/plant.py acc_noise); real machine
-        # vibration is coloured, but the detector has no filter so any broadband content above ~3 mg rms trips it.
-        # (Measured on this plant with seed 3: 2 mg fires one step early, 22.1 / 20.9; 3 mg fires within 0.7 s.)
+        # FW (source-level design): the motion-onset detector compares ONE raw accelerometer sample against the 1 s
+        # mean reference with a 0.5 deg threshold and a rising edge, no filter and no persistence (chart_2291
+        # l.163-166 raw acc, chart_2316 l.97-100, MdlApp.c:44276 0.00872664619F): 0.5 deg = 8.7 mg perpendicular.
+        # PLANT-DEPENDENT (noise model): whether it trips depends on the real board's noise and vibration spectrum,
+        # which no source gives. ASSUMPTION: white, isotropic noise (sil/plant.py acc_noise). With per-axis sigma the
+        # per-sample false-onset probability is exp(-(8.7 mg)^2 / (2 sigma^2)): 1 mg -> never (onset still needs real
+        # motion; the noise moves it by at most one 0.2 % step, 7 of 24 staircases over seeds 1-12), 5 mg -> 22 % per
+        # tick. At 5 mg the onset fires on the staircase's first step and BOTH deadbands are saved as 20 - 0.5 = 19.5 %,
+        # whatever the valve: 19.5 / 19.5 within 1-18 ticks for every seed 1-12. (Seed 3: 2 mg fires one step early,
+        # 22.1 / 20.9; 3 mg fires within 0.71 s.) Real vibration is coloured, but with no filter any broadband content
+        # above ~3 mg rms would trip it.
+        # The mount uses the 1 s means (UpdateUnitAccAvg, chart_2291 l.77-79, l.402-413), so it does not collapse like
+        # the deadbands, but it is not noise-free either. Max element error, seeds 1-12: 5 mg 8.5e-5 .. 7.7e-3 (seed 7
+        # 1.4e-3; seed 11 7.7e-3 = 0.44 deg), 1 mg 1.1e-4 .. 8.6e-4. The bounds below cover that spread, not only
+        # seed 7. The speed comes from the gyro and is untouched (X[2] / true = 0.9999998 at both levels, every seed).
         results = {}
         for sigma in (0.001, 0.005):
             plant = KinematicPlant(q0=POSE, degrees=True, acc_noise=sigma, seed=7, **VALVE)
@@ -491,26 +552,31 @@ class TestCalibTiltFindings(unittest.TestCase):
         for port in ("tiltPosi", "tiltNega"):
             db = VALVE["deadband"][port]
             self.assertLessEqual(abs(snap[f"y.tblReqSpdToActCmd.{port}_Y"][1] - db), ONSET_DLY_CMP + 1e-4, port)
-        self.assertLess(mount_err, 2e-3)
+        self.assertLess(mount_err, 2e-3)                 # seeds 1-12: <= 8.6e-4
         plant, snap, d, mount_err = results[0.005]
         for port, state in (("tiltPosi", "TiltPosiMin"), ("tiltNega", "TiltNegaMin")):
             self.assertEqual(snap[f"y.tblReqSpdToActCmd.{port}_Y"][1], 19.5, port)
             self.assertLess(d[state], STAIR_TICKS, f"{state} ended on the first staircase step")
             true = plant_speed_at_ref(plant, port)
-            self.assertAlmostEqual(snap[f"y.tblReqSpdToActCmd.{port}_X"][2], true, delta=5e-3 * true)
-        self.assertLess(mount_err, 3e-3)
+            self.assertAlmostEqual(snap[f"y.tblReqSpdToActCmd.{port}_X"][2], true, delta=1e-3 * true)
+        self.assertLess(mount_err, 1e-2)                 # seeds 1-12: <= 7.7e-3 (seed 7 alone: 1.4e-3)
 
     def test_an_aborted_speed_leg_leaves_a_non_monotonic_table_that_the_next_save_persists(self):
-        # FINDING (firmware): chart_2383 l.64-67 zeroes actSpdRef_TiltPosi on entering TiltPosiToPnt1 and chart_2338
-        # l.44 writes X = [0, 0.01, max(MinTblReqSpd, peak)]. Pausing a few ticks into the leg (Auto Mode button)
-        # leaves peak ~ 0, so X = [0, 0.01, 0.002]: X[2] < X[1]. MinTblReqSpd's own comment says it exists "to have
-        # monotonous change of the input array" (SysPar.m:112) -- it was sized for the old 0.001 knee, the knee is now
-        # the 0.01 literal. The abort raises no save, but the persistent tables survive and the next calibration of
-        # ANY step saves them (AppCtrlIf.c:802-1012 copies all tables each calibrating tick): here step 28, which does
-        # not move anything. Same pattern as test_calibration_entry.test_aborted_step28_value_is_persisted_by_the_next_save.
+        # FINDING (firmware, source-level; LATENT IN THIS BUILD): chart_2383 l.64-67 zeroes actSpdRef_TiltPosi on
+        # entering TiltPosiToPnt1, chart_2338 l.44 floors it at MinTblReqSpd and l.103 writes X = [0, 0.01, that].
+        # Pausing a few ticks into the leg (Auto Mode button) leaves peak ~ 0, so X = [0, 0.01, 0.002]: X[2] < X[1].
+        # MinTblReqSpd's own comment says it exists "to have monotonous change of the input array" (SysPar.m:112) --
+        # it was sized for the old 0.001 knee, the knee is now the 0.01 literal. The abort raises no save, but the
+        # persistent tables survive and the next calibration of ANY step saves them (AppCtrlIf.c:802-1012 copies all
+        # tables each calibrating tick): here step 28, which does not move anything. Same pattern as
+        # test_calibration_entry.test_aborted_step28_value_is_persisted_by_the_next_save.
+        # Latent: EnTestPar = true (SysPar.m:5) folds the stored-table inport to parLocalTest, so the running model
+        # interpolates parLocalTest.reqSpdToActCmd (MdlApp.c:50843-50846) and the non-monotonic breakpoints only reach
+        # NVM; they bite in an EnTestPar = false build.
         plant = KinematicPlant(q0=POSE, degrees=True, strict_limits=True, **VALVE)
         emu = SaveHandshake()
         h = Harness(plant=[plant, emu]).reset().nominal_inputs()
+        h.fw["u.isMachCalib"] = 1                         # ASSUMPTION, module docstring
         h.gnss_rtk_fixed()
         h.tick(3)
         fw = h.fw
@@ -526,8 +592,11 @@ class TestCalibTiltFindings(unittest.TestCase):
         self.assertEqual(h.valves(), {}, "the pause drops the valve at once, no ramp")
         self.assertEqual(emu.saved, [])
         X = fw["y.tblReqSpdToActCmd.tiltPosi_X"]
+        Y_at_abort = fw["y.tblReqSpdToActCmd.tiltPosi_Y"]
         self.assertEqual(X, [0.0, IDENTIFIED_X1, MIN_TBL_REQ_SPD])
         self.assertLess(X[2], X[1], "non-monotonic breakpoints")
+        # the aborted run's onset (FW: onset - 0.5, inside +-0.5 % of the valve; the exact 22.3 is PLANT-DEPENDENT)
+        self.assertLessEqual(abs(Y_at_abort[1] - VALVE["deadband"]["tiltPosi"]), ONSET_DLY_CMP + 1e-4)
         h.request_step("CalibForkRefPose")               # paused calibration steps switch directly (chart_2537)
         h.tick(1)
         self.assertEqual(h.main_state(), "CalibForkRefPose_Paused")
@@ -536,7 +605,7 @@ class TestCalibTiltFindings(unittest.TestCase):
         self.assertEqual(len(emu.saved), 1)
         snap = emu.saved[0][1]
         self.assertEqual(snap["y.tblReqSpdToActCmd.tiltPosi_X"], [0.0, IDENTIFIED_X1, MIN_TBL_REQ_SPD])
-        self.assertAlmostEqual(snap["y.tblReqSpdToActCmd.tiltPosi_Y"][1], 22.3, places=4)   # the aborted run's onset
+        self.assertEqual(snap["y.tblReqSpdToActCmd.tiltPosi_Y"], Y_at_abort)       # the aborted run's onset, persisted
         self.assertEqual(snap["y.tblReqSpdToActCmd.tiltNega_X"][2], F32(vlv.read_tables(fw)["tiltNega"][0][2]))
         self.assertLess(np.abs(mount(snap, "y.imuMntOri_tilt") - mount(fw, "par.imuTilt")).max(), 1e-6)
 

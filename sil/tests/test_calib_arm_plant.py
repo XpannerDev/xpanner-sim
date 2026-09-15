@@ -8,28 +8,40 @@ THE SEQUENCE (chart_1210 CalibStepMgr, states 204-248; generated MdlApp.c:25608-
   ArmOutMin_stb 8 s -> ArmOutToPnt2 (armOut 70 %, > AngArmPnt2 = 40 deg from Pnt1, or 10 s) -> ArmPnt2_stb 8 s ->
   ArmPnt2_log 1 s -> Arm_save -> CalibStandby.  Guards: T559/T564 [isMotionOnset.armIn/armOut] (MdlApp.c:25656, :25862),
   T533/T547 [angCalib.arm > AngArmPnt1/2 || cnt > CntCalib_timeout] (MdlApp.c:25823, :26040); SysPar.m:102-121.
+  The _Min states have NO count guard: besides the onset they only leave on the common abort (cntSave > CntCalib_save,
+  ~isCalibrating, or a save acknowledge edge; MdlApp.c:25630-25660), and the main chart's CalibArm only on an operator
+  stop/pause, isCalibInhibited or calibStep == CalibStandby (MdlApp.c:39776ff).
 
 WHAT THE FIRMWARE IDENTIFIES, AND FROM WHAT
-  minimum command  _Min: armIn/armOut = 20 % + 0.2 % every 200 ticks, raw (not smoothed) (chart_3055 l.53-99, 127-134,
-                   196-197; SysPar.m:105, 110, 170-171). Onset = |angle(accRef, accRaw)| > 0.5 deg since the _Min entry
-                   (chart_2316 l.74-75, 91-104; chart_2291 l.147-153, CalcAccVecAngle l.489-496; SysPar.m:131), a rising
-                   edge. On the onset tick the table stores propVlvCmd - 0.5 (chart_2338 l.59-60, SysPar.m:134).
+  minimum command  _Min: armIn/armOut = 20 % + 0.2 % every 200 ticks, raw (not smoothed), capped at PropVlvCmdMinCalib_limit
+                   100 % (chart_3055 l.53-99, 196-197; SysPar.m:105, 109, 110, 170-171). Onset = |angle(accRef, accRaw)| >
+                   0.5 deg on ONE raw sample since the _Min entry (chart_2316 l.74-75, 91-104; chart_2291 l.147-153,
+                   CalcAccVecAngle l.489-496; SysPar.m:131), a rising edge. The table stores the RAW command of the detecting
+                   step itself minus 0.5 (chart_2338 l.59-60, SysPar.m:134; generated: propVlvCmdRaw_armIn MdlApp.c:45034
+                   -> :45578).
   speed            peak |y.cyls.arm.spd| -- the firmware's CYLINDER STROKE speed J(q_fw) * qDot_fw -- over the _ToPnt leg
                    (chart_2383 l.56-58, 81-82; actSpdArm = fabsf(MdlApp_Y.cyls.arm.spd), MdlApp.c:45060), saved as X[2]
                    next to Y[2] = PropVlvRefCmd = 70 % and the fixed knee X[1] = 0.01 (chart_2338 l.93-96).
   IMU mount        rebuilt on the tick leaving ArmPnt2_log from three 1 s accelerometer means (chart_2291 l.275-301):
-                   vy = -(v1 x v2) (pin axis), vz = -(vy x accRef), vx = vy x vz. Only raw accelerometers enter. Its
-                   output starts from parLocalTest.imuArm (one-time init, MdlApp.c:42964-42972).
+                   v1 = accPnt1 - accRef, v2 = accPnt2 - accRef, vy = -(v1 x v2) (pin axis), vz = -(vy x accRef),
+                   vx = vy x vz. Only raw accelerometers enter. Its output starts from parLocalTest.imuArm (one-time init,
+                   MdlApp.c:42964-42972).
   Nothing is fed back: the arm attitude reads parLocalTest.imuArm (MdlApp.c:41930-41934) and the valve map reads
-  parLocalTest.reqSpdToActCmd (MdlApp.c:50340ff); the results only reach the NVM image (AppCtrlIf.c:802-1012, while
-  isCalibrating). Tests that "load" a result write it into par.* themselves, standing for a reflash.
+  parLocalTest.reqSpdToActCmd (MdlApp.c:50340ff); no C file assigns parLocalTest. The results only reach the NVM image
+  (AppCtrlIf.c:802-1012, while isCalibrating), which comes back as MdlApp_U.*Stored inports (tables AppCtrlIf.c:432ff,
+  mounts :565ff) that THIS BUILD never reads: EnTestPar = true (SysPar.m:5) constant-folds the <S1>/Switch6-17 blocks
+  to parLocalTest, so every *Stored inport is dead. An EnTestPar = false build reads them (question for David: which one
+  ships). Tests that "load" a result write it into par.* themselves, standing for a reflash or that build.
 
 THE PLANT THIS FILE CALIBRATES (every choice is a test fixture, not firmware data)
   UNIT_VALVE   armIn deadband 23.1 % / vmax 0.11 m/s, armOut 22.39 % / 0.14 m/s. GUESS, chosen so that (1) neither equals
                the stored table (armIn 32.5 % / 0.417, armOut 31.5 % / 0.5 with Y[2] 80, ECR88D_ShortArm.m:322-325), so a
                pass cannot be an echo; (2) the staircase is short (10 s per 1 % above 20 %); (3) the post-leg coast stays
-               below the arm stop from a plumb start (at the stored 0.417 m/s it reaches 155 deg, test_valve_plant);
-               (4) the plant's 0.5 deg crossing falls well inside a staircase step (asserted, not assumed).
+               below the arm stop from a plumb start (at the stored 0.417 m/s it reaches 155 deg: test_valve_plant for
+               level starts at arm >= 121, and the pitched arm-115 start of this file likewise, measured).
+               The line between deadband and vmax is valves.py's GUESSed 2-segment knee (X[1] = 0.001 of the stored
+               table) with a first-order lag TAU_VALVE = 0.1 s (GUESS) and valves.effective_commands (ASSUMPTION: a port
+               whose raw command reaches its deadband is open at once).
   UNIT_BOARD   the unit's arm IMU board = compiled par.imuArm @ Rx(6 deg) @ Rz(-4 deg). GUESS: a plausible crooked board,
                so the stored mount is another unit's and the rebuilt one can be told apart from it.
   DECK_POSTURE the deck's arm procedure (resources/Sensor_and_Valve_Calibration_ProductionV1.md slides 8-9: "Pitch angle
@@ -37,26 +49,41 @@ THE PLANT THIS FILE CALIBRATES (every choice is a test fixture, not firmware dat
                6 deg, boom -31, arm 115, so boom + arm + pitch = 90 deg and the arm chord hangs plumb. ASSUMPTION: URDF pitch
                +6 deg; the deck's sign convention is not in any source, and CalibArm only sees the arm's attitude to gravity
                (TestReferencePostureIsPartOfTheMount), so the sign does not matter here. Nose-up with a plumb arm would need
-               arm 127 deg and leave too little room to the 155 deg OEM-TEAM stop.
-  Accelerometer -1 g along world up and no link accelerations (plant defaults; the sign is pinned in
-               test_valve_plant.test_accelerometer_sign_is_minus_one_g). Strict joint stops in every run.
+               arm 127 deg and leave too little room to the 155 deg OEM-TEAM stop (plant-dependent: stop and vmax).
+  Accelerometer kinematics.ACC_SIGN (-1 g along world up; since 54b34f0 shared by sil.plant and kinematics.publish_imus).
+               ASSUMPTION with evidence: only -1 g rebuilds the compiled mounts at reachable reference poses
+               (test_valve_plant.test_accelerometer_sign_is_minus_one_g, which assumes the par.imu* literals are field
+               calibration results). Quasi-static: no link accelerations (plant GUESS). Strict joint stops in every run.
   u.isMachCalib = 1: ASSUMPTION that the tablet raises the service-mode flag while calibrating (question for David,
                test_calibration_entry); on a healthy machine it blocks nothing (asserted).
 
-FINDINGS PINNED HERE
-  F1 The rebuilt mount encodes the arm's attitude at ArmPntRef: it is the true mount turned so that link x points along
-     gravity. Off plumb by delta at the reference -> saved mount = true @ Ry(delta) -> once loaded the arm reads delta high,
-     forever, with no alarm. The laser-level plumb in the deck is load-bearing; squaring the arm to the jacked-up chassis
-     (or trusting the tablet's angle) costs the jack-up pitch.
-  F2 A backwards-plumbed arm valve calibrates without complaint into mount @ diag(1, -1, -1): once loaded the firmware reads
-     the arm mirrored about the reference posture AND its arm rate sign follows the backwards valve, so its loops would
-     converge onto the mirrored geometry. No guard checks the direction (all angle tests use |angle|).
-  F3 The onset detector compares single raw accelerometer samples against 0.5 deg (8.7 mg). At 5 mg rms per axis the first
-     staircase sample fires it: both minima are saved as 19.5 % = PropVlvCmdInitOffs - 0.5 while the valve never opened.
-  F4 Arm_save rewrites every OTHER axis's table into the calibration shape: knee 0.001 -> 0.01, Y[2] -> PropVlvRefCmd (boom
-     80 -> 70 %, travel 100 -> 60 %, rotator 80 -> 100 %), blade -> identity with a 0.01 % deadband (chart_2338 l.68-116
-     has no per-axis gating). Latent in this build (par.* is what runs), live the day the NVM tables are used.
-  F5 A unit that matches its stored arm deadbands spends ~4 of its ~5 minutes of CalibArm in the two staircases.
+FINDINGS PINNED HERE (class in brackets: source-level defect / procedure dependency / latent in this build / plant-dependent)
+  F1 [procedure dependency; latent in this build] The rebuilt mount encodes the arm's attitude at ArmPntRef: it is the true
+     mount turned so that link x points along the reference accelerometer vector. Off plumb by delta at the reference ->
+     saved mount = true @ Ry(delta) -> once loaded the arm reads delta high, forever, with no alarm. There is no plausibility
+     check, so the deck's laser-level plumb is load-bearing; squaring the arm to the jacked-up chassis (or trusting the
+     tablet's angle) costs the jack-up pitch. That the reference is baked in follows from the source for any plant; that the
+     reference is the arm HANGING plumb rests on ACC_SIGN = -1.
+  F2 [procedure dependency: no direction guard; latent in this build] A backwards-plumbed arm valve calibrates without
+     complaint into mount @ diag(1, -1, -1): vy = -(v1 x v2) follows the direction of travel and every guard uses |angle| or
+     |speed|. Once loaded, the firmware reads the arm mirrored about the reference posture AND its arm rate sign follows the
+     backwards valve, so the sign of its arm feedback is not inverted -- its geometry is (not run closed loop here).
+  F3 [plant-dependent: accelerometer noise level] The onset detector compares single raw accelerometer samples against
+     0.5 deg (8.7 mg); the raw vector is only mirrored, not filtered (MdlApp.c:11102-11105). With 5 mg rms per axis (an
+     ASSUMPTION: the IMU's own filtering before CAN is in no source) the first staircase sample fires it and both minima are
+     saved as 19.5 % = PropVlvCmdInitOffs - 0.5 while the valve never opened; at 1 mg it does not happen.
+  F4 [latent in this build] GenCorrTblSetReqSpdToActCmd rewrites every OTHER axis's table into the calibration shape, and
+     Arm_save's NVM copy takes all of them: knee 0.001 -> 0.01, Y[2] -> PropVlvRefCmd (boom 80 -> 70 %, travel 100 -> 60 %,
+     rotator 80 -> 100 %) next to the stored X[2] measured at the old Y[2], blade -> identity with a 0.01 % deadband
+     (chart_2338 l.68-116 has no per-axis gating). par.* is what runs here; live the day the NVM tables are used.
+  F5 [plant-dependent: the unit's real deadbands] A unit whose valve opens at its stored arm deadbands spends at least
+     242 s of CalibArm in the two staircases (firmware: 10 s per 1 % above 20 %), about 4 of its ~5 minutes.
+  F6 [plant-dependent: valve flow near the deadband] The fixed -0.5 % onset compensation lands 0.2-0.3 % BELOW this plant's
+     deadband: at the X[1] = 0.001 m/s knee the plant needs 1-2 staircase steps above its deadband to turn 0.5 deg. A crossing
+     just after a staircase increment stores the NEW step (the detecting step's raw command), up to +0.2 % more.
+  Source only, not run here (the cap is 800 s of machine time away): the _Min states have no timeout. An arm that never turns
+     0.5 deg of gravity angle keeps the staircase climbing to 100 % and holding it until the operator stops or pauses or
+     calibration is inhibited (module docstring, THE SEQUENCE).
 
 TICK BOOKKEEPING (Recorder): row t is recorded inside the plant call before MdlApp_step() number t, after the plant integrated:
   plant state in row t is what step t reads; firmware outputs in row t were written by step t-1.
@@ -74,6 +101,7 @@ from sil.harness import Harness, SaveHandshake
 from sil.plant import KinematicPlant
 
 DEG = math.pi / 180.0
+DT = vlv.DT
 
 
 def f32(x):
@@ -84,6 +112,7 @@ def f32(x):
 STB_TICKS = 801             # CntCalib_stb 800 (:102): entry tick + 800 during ticks (test_calibration_entry STB_TICKS)
 LOG_TICKS = 101             # CntCalib_log 100 (:103)
 TIMEOUT_TICKS = 1002        # CntCalib_timeout 1000 (:104), [cnt > 1000]
+RAMP_TICKS = 100            # CntCalib_ramp 100 (:106): SmoothPropVlvCmd cubic ramp length
 SAVE_TICKS = 2              # Arm_save with the main.c handshake: request on the first during tick, ack one step later
 STAIR_TICKS = 200           # CntCalibStepFindingMin (:105)
 STAIR_FIRST = 199           # the entry tick counts as the first of 200 (test_calibration_entry, staircase test)
@@ -104,6 +133,8 @@ ARM_SEQUENCE = ("ArmPntRef_stb", "ArmPntRef_log", "ArmInMin", "ArmInMin_stb", "A
 PROP_VLV_REF_CMD = dict(trvlLeFwd=60.0, trvlLeRev=60.0, trvlRiFwd=60.0, trvlRiRev=60.0, swingLe=60.0, swingRi=60.0,
                         bm1Up=70.0, bm1Down=70.0, bm2Up=60.0, bm2Down=60.0, armIn=70.0, armOut=70.0, linkIn=70.0,
                         linkOut=70.0, tiltPosi=70.0, tiltNega=70.0, rotPosi=100.0, rotNega=100.0)
+# ECR88D_ShortArm.m:322-325 (the compiled arm tables), pinned once against the pre-run par snapshot
+STORED_ARM = {"armIn": ([0.0, 0.001, 0.417173922], [0.0, 32.5, 70.0]), "armOut": ([0.0, 0.001, 0.5], [0.0, 31.5, 80.0])}
 
 # -- the plant (module docstring, THE PLANT THIS FILE CALIBRATES) ----------------------------------------------------------
 UNIT_DEADBAND = {"armIn": 23.1, "armOut": 22.39}          # GUESS, see docstring
@@ -121,12 +152,29 @@ def compiled_arm_mount():
     return mount(Harness().reset().fw, "par.imuArm")
 
 
+def par_snapshot(fw):
+    """Every speed table and the arm mount the firmware runs with (parLocalTest), copied."""
+    return {p: (list(fw[p]) if isinstance(fw[p], list) else fw[p])
+            for p in fw.paths("par.reqSpdToActCmd.") + fw.paths("par.imuArm.")}
+
+
 def plumb_error(R_link):
-    """delta such that the gravity direction, seen in the link frame and projected onto its x-z plane, is Ry(delta) @ x.
-    That is the direction CalibArm's rebuild takes as link x (chart_2291 l.279-297 with accRef = gravity): for
-    vy = y, vz = -(y x g) = (-g_z, 0, g_x), vx = y x vz = (g_x, 0, g_z). Accelerometer -1 g: accRef = world down."""
-    g = np.asarray(R_link).T @ -kin.UP
+    """delta such that the reference accelerometer vector, seen in the link frame and projected onto its x-z plane, is
+    Ry(delta) @ x. That is the direction CalibArm's rebuild takes as link x (chart_2291 l.279-297): for vy = y and
+    accRef = g, vz = -(y x g) = (-g_z, 0, g_x), vx = y x vz = (g_x, 0, g_z). With ACC_SIGN = -1, accRef = world down."""
+    g = np.asarray(R_link).T @ (kin.ACC_SIGN * kin.UP)
     return math.atan2(-g[2], g[0])
+
+
+def smooth_ramp(u0, u1, n=RAMP_TICKS):
+    """SmoothPropVlvCmd samples tRamp = 1..n, in float32 as the generated code: uStart + (uTarget - uStart) * s,
+    r = tRamp / cntRamp, s = r^2 (3 - 2 r) (chart_3055 l.211-243)."""
+    f = np.float32
+    out = []
+    for t in range(1, n + 1):
+        r = f(t) / f(n)
+        out.append(float(f(u0) + (f(u1) - f(u0)) * (r * r * (f(3) - f(2) * r))))
+    return out
 
 
 class Recorder:
@@ -152,10 +200,12 @@ class Recorder:
 class ArmRun:
     """One CalibArm run and its record. Index helpers take ROW TICKS (Recorder.t)."""
 
-    def __init__(self, h, plant, rec, emu, ref_frame, inhibit_before):
+    def __init__(self, h, plant, rec, emu, ref_frame, inhibit_before, par_before, par_after):
         self.h, self.fw, self.plant, self.emu = h, h.fw, plant, emu
         self.ref_frame = ref_frame              # plant arm frame at the reference posture (world <- link)
         self.inhibit_before = inhibit_before    # inhibit bits in NoTarget just before the step jump
+        self.par_before = par_before            # parLocalTest tables + imuArm after reset, before the first tick
+        self.par_after = par_after              # the same, right after the run (before any test loads a result)
         c = rec.cols
         self.t = np.array(c["t"])
         self.step = c["step"]
@@ -189,17 +239,31 @@ class ArmRun:
     def table(self, port):
         return self.snap[f"y.tblReqSpdToActCmd.{port}_X"], self.snap[f"y.tblReqSpdToActCmd.{port}_Y"]
 
+    def stored(self, port):
+        """The table the firmware ran with, from the PRE-run parLocalTest snapshot."""
+        return self.par_before[f"par.reqSpdToActCmd.{port}_X"], self.par_before[f"par.reqSpdToActCmd.{port}_Y"]
+
     def identified_mount(self):
         return mount(self.snap, "y.imuMntOri_arm")
+
+    def onset_tick(self, state):
+        """Row tick of the first plant sample 0.5 deg away from the pose at the _Min entry (= the sample step `tick` reads;
+        gravity angle == arm travel here because the pin axis stays horizontal)."""
+        start = self.entry[state]
+        q0 = self.q[self.i(start)]
+        return self.first_tick_after(start, lambda k: abs(self.q[k] - q0) > ONSET)
 
 
 def calibrate_arm(plant, ground=None, timeout_s=600.0):
     """Boot healthy in NoTarget with `plant` publishing every sensor, jump to CalibArm, run to NoTarget (strict stops)."""
+    if plant.acc_sign != kin.ACC_SIGN:
+        raise ValueError("this file's reference-posture algebra (plumb_error) assumes kinematics.ACC_SIGN")
     plant.strict_limits = True
     if ground:
         plant.set_ground(**ground)
     rec, emu = Recorder(plant), SaveHandshake()
     h = Harness(plant=[plant, rec, emu]).reset()
+    par_before = par_snapshot(h.fw)
     h.nominal_inputs()
     h.gnss_rtk_fixed()
     h.fw["u.isMachCalib"] = 1
@@ -209,7 +273,7 @@ def calibrate_arm(plant, ground=None, timeout_s=600.0):
     h.jump_to_step("CalibArm")
     h.run_until(lambda h: h.curr_step() == "NoTarget", timeout_s, "CalibArm back in NoTarget")
     h.tick(1)
-    return ArmRun(h, plant, rec, emu, ref_frame, inhibit_before)
+    return ArmRun(h, plant, rec, emu, ref_frame, inhibit_before, par_before, par_snapshot(h.fw))
 
 
 def unit_plant(**kw):
@@ -219,12 +283,29 @@ def unit_plant(**kw):
 
 
 def settle_at(h, plant, q_arm, ticks=300):
-    """Put the plant arm at q_arm (at rest) and let the firmware's 3 Hz joint LPF settle (chart_2143 l.188)."""
+    """Put the plant arm at q_arm (at rest) and let the firmware's 3 Hz joint LPF settle (chart_2143 l.188).
+    Writes the plant's state attributes q/qdot and calls its invalidate() (re-publish on the next tick) because the plant
+    has no set-joint helper yet (plant change request); the limit check stands in for the strict stops this bypasses."""
+    lo, hi = plant.limits["arm"]
+    if not lo <= q_arm <= hi:
+        raise ValueError(f"settle_at arm {math.degrees(q_arm):.2f} deg is outside the plant's stops")
     plant.q["arm"] = q_arm
     plant.qdot["arm"] = 0.0
     plant.invalidate()
     h.tick(ticks)
     return h.fw["y.jnts.Bm2ToArm.q"]
+
+
+def assert_dwell_matches_onset_step(tc, run, port, state):
+    """The _Min dwell is fixed by the staircase step the saved minimum came from. Row start + j carries staircase step
+    k(j) = 0 for j < 199, else 1 + (j - 199) // 200; the detecting step writes row start + j and _stb is entered one row
+    later (Delay1), so dwell = j + 1 lies in [max(1, 200 k), 199 + 200 k] for the saved step k."""
+    y1 = run.table(port)[1][1]
+    k_float = (y1 + ONSET_CMP - STAIR_START) / STAIR_PCT
+    k = round(k_float)
+    tc.assertAlmostEqual(k_float, k, delta=1e-4, msg=f"{port}: saved minimum {y1} is on the staircase grid")
+    tc.assertTrue(max(1, STAIR_TICKS * k) <= run.dwell(state) <= STAIR_FIRST + STAIR_TICKS * k, (port, k, run.dwell(state)))
+    return k
 
 
 # =======================================================================================================================
@@ -238,7 +319,6 @@ class TestCalibArmOnTheDeckPosture(unittest.TestCase):
         plant = unit_plant(hardware={"imuArm": cls.unit_mount})
         cls.arm = run = calibrate_arm(plant, ground=dict(pitch=JACK_UP_PITCH))
         h, fw = run.h, run.fw
-        cls.stored = {p: (fw[f"par.reqSpdToActCmd.{p}_X"], fw[f"par.reqSpdToActCmd.{p}_Y"]) for p in vlv.PORTS}
         cls.inhibit_after = h.inhibit_names()
         cls.calibrating_after = fw["y.isCalibrating"]
         # static reads with the STORED (compiled) mount, then with the identified one loaded (a reflash)
@@ -248,7 +328,7 @@ class TestCalibArmOnTheDeckPosture(unittest.TestCase):
         cls.err_loaded = [settle_at(h, plant, q) - q for q in poses]
         cls.links_arm_err = np.abs(np.array(fw["y.links.arm.R"]).reshape(3, 3, order="F") - plant.frames["arm"]).max()
 
-    def test_runs_the_13_substates_in_order_and_takes_109_s(self):
+    def test_runs_the_13_substates_in_order_with_the_chart_dwell_times(self):
         # WHY: success = calibStep back at CalibStandby and autoCtrl_CurrStep back at NoTarget (spec A7 step 5), and the
         # machine time is the budget an Isaac run has to pay: 43.1 s of unconditional dwell + the two staircases + legs.
         # FW: chart_1210 transitions (module docstring); save handshake main.c:394-419 (SaveHandshake), Arm_save exit on
@@ -272,18 +352,20 @@ class TestCalibArmOnTheDeckPosture(unittest.TestCase):
         self.assertEqual(len(run.emu.saved), 1)
         self.assertEqual(run.emu.reloads, 1)
         self.assertEqual(run.emu.saved[0][0], run.entry["Arm_save"] + 1, "request raised on the first during tick")
-        # machine time = fixed dwell + staircases + legs. Observed 4310 + 3488 + 2633 + 195 + 308 = 10934 ticks = 109.3 s
-        # (ArmPntRef_stb entry to CalibStandby); NoTarget and isCalibrating = false follow one tick later.
+        # machine time = fixed dwell + staircases + legs, each staircase fixed by the step its minimum came from.
+        # Plant-dependent (UNIT_DEADBAND / UNIT_VMAX GUESS): observed 4310 + 3488 + 2633 + 195 + 308 = 10934 ticks =
+        # 109.3 s (ArmPntRef_stb entry to CalibStandby); NoTarget and isCalibrating = false follow one tick later.
+        for port, state in (("armIn", "ArmInMin"), ("armOut", "ArmOutMin")):
+            assert_dwell_matches_onset_step(self, run, port, state)
         variable = sum(run.dwell(s) for s in ("ArmInMin", "ArmOutMin", "ArmInToPnt1", "ArmOutToPnt2"))
-        total = run.entry["CalibStandby"] - run.entry["ArmPntRef_stb"]
-        self.assertEqual(total, FIXED_TICKS + variable)
-        self.assertTrue(10500 < total < 11500, total)
+        self.assertEqual(run.entry["CalibStandby"] - run.entry["ArmPntRef_stb"], FIXED_TICKS + variable)
 
     def test_staircase_is_raw_20_percent_plus_0p2_every_200_ticks_and_the_plant_waits_for_its_own_deadband(self):
         # WHY: the _Min result can only mean "the plant's deadband" if the firmware commands exactly the documented
         # staircase and the plant does not move before the staircase reaches its valve's deadband.
         # FW: chart_3055 l.53-66 (cnt resets on step change, step += 1 every CntCalibStepFindingMin), l.76-92
         # (cmdStep = single(step) * 0.2 + 20), l.196-197 (isFindingMotionOnset -> raw command, no cubic smoothing).
+        # PLANT precondition: "moves on the first command at its deadband" is valves.effective_commands (ASSUMPTION).
         run = self.arm
         for port, state in (("armIn", "ArmInMin"), ("armOut", "ArmOutMin")):
             with self.subTest(port=port):
@@ -302,44 +384,45 @@ class TestCalibArmOnTheDeckPosture(unittest.TestCase):
                 np.testing.assert_array_equal(run.q[run.i(start):run.i(first_open)], q0)
                 self.assertNotEqual(run.q[run.i(first_open)], q0, "moves on the first command at its deadband")
 
-    def test_identified_minimum_is_the_staircase_command_at_the_plants_half_degree_crossing(self):
+    def test_identified_minimum_is_the_detecting_steps_raw_command_minus_half_a_percent(self):
         # WHY: the core identification. The plant's arm first turns 0.5 deg away from the logged reference on a known
         # tick; the firmware must see it on that very step (the IMU is read and the table updated in the same step),
-        # leave _Min one step later (Delay1 on isMotionOnset), and store the command of that tick minus 0.5 %.
+        # leave _Min one step later (Delay1 on isMotionOnset), and store the RAW command THAT step writes minus 0.5 %.
+        # That is exact wherever the crossing falls in a staircase step (with the stored deadbands the armOut crossing
+        # comes 2 ticks after an increment and stores the new step, TestStoredValveTiming).
         # Deadband here: 23.1 / 22.39 % (stored 32.5 / 31.5): what comes back is the plant, not the table.
-        # FW: chart_2316 l.74-75 + DetectAngMotion l.91-104; chart_2338 l.59-60; chart_1210 T559/T564 via Delay1
-        # (MdlApp.c:25656, :25862). Gravity angle == arm travel here: the pin axis is horizontal (pitch only).
+        # FW: chart_2316 l.74-75 + DetectAngMotion l.91-104; chart_2338 l.59-60; propVlvCmd = propVlvCmdRaw while finding
+        # the onset (chart_3055 l.196-197; MdlApp.c:45034 -> :45578); chart_1210 T559/T564 via Delay1 (MdlApp.c:25656,
+        # :25862). Gravity angle == arm travel here: the pin axis is horizontal (pitch only).
         run = self.arm
-        for port, state, y1_stored in (("armIn", "ArmInMin", 32.5), ("armOut", "ArmOutMin", 31.5)):
+        for port, state in (("armIn", "ArmInMin"), ("armOut", "ArmOutMin")):
             with self.subTest(port=port):
-                start = run.entry[state]
-                q0 = run.q[run.i(start)]
-                cross = run.first_tick_after(start, lambda k: abs(run.q[k] - q0) > ONSET)
-                cmd = run.cmd[port]
-                c = cmd[run.i(cross)]
-                # precondition: the crossing is not on a staircase edge (the plant integrates the command of step t-1)
-                self.assertTrue(all(cmd[run.i(cross) + d] == c for d in (-2, -1, 0, 1)), "crossing on a step edge")
-                self.assertEqual(run.y1[port][run.i(cross)], f32(y1_stored), "before the onset: stored value")
-                self.assertEqual(run.y1[port][run.i(cross) + 1], f32(np.float32(c) - np.float32(ONSET_CMP)))
+                y1_stored = run.stored(port)[1][1]
+                cross = run.onset_tick(state)
+                k = run.i(cross)
+                c = run.cmd[port][k + 1]                      # written by step `cross`, the detecting step
+                self.assertEqual(run.y1[port][k], y1_stored, "before the onset: stored value")
+                self.assertEqual(run.y1[port][k + 1], f32(np.float32(c) - np.float32(ONSET_CMP)))
                 self.assertEqual(run.entry[state + "_stb"], cross + 2)
                 identified = run.table(port)[1][1]
-                self.assertEqual(identified, run.y1[port][run.i(cross) + 1], "the saved value")
+                self.assertEqual(identified, run.y1[port][k + 1], "the saved value")
+                self.assertGreater(y1_stored - identified, 9.0, "not the stored value")
+                # PLANT-DEPENDENT window (F6): the plant cannot move below its deadband, and at the 0.001 m/s knee
+                # (GUESS line, TAU_VALVE GUESS) it needs 1-2 steps above it to turn 0.5 deg at this arm Jacobian.
+                # Observed armIn 22.9 (crossing 87 ticks into the 23.4 % step), armOut 22.1 (into the 22.6 % step):
+                # the fixed -0.5 % lands 0.2-0.3 % BELOW the plant's deadband.
                 db = UNIT_DEADBAND[port]
                 self.assertGreaterEqual(identified + ONSET_CMP, db - 1e-5)
                 self.assertLessEqual(identified + ONSET_CMP, db + 2 * STAIR_PCT + 1e-5, "within two staircase steps")
-                self.assertGreater(y1_stored - identified, 9.0, "not the stored value")
-        # observed: armIn 22.9 (crossing 87 ticks into the 23.4 % step), armOut 22.1 (into the 22.6 % step): the
-        # quasi-static plant needs 0.5 deg at ~X[1] = 0.001 m/s, i.e. 1-2 steps above the deadband, and the fixed -0.5 %
-        # compensation then lands 0.2-0.3 % BELOW the true deadband.
-        self.assertAlmostEqual(run.table("armIn")[1][1], 22.9, places=4)
-        self.assertAlmostEqual(run.table("armOut")[1][1], 22.1, places=4)
 
     def test_identified_speed_is_the_plant_stroke_speed_at_the_reference_command(self):
         # WHY: X[2] is what the auto valve map would scale every arm request with. The plant's stroke speed at 70 % is
         # armIn: vmax 0.11 (Y[2] of the plant table is 70, so 70 % is the top of its line); armOut: its line at 70 %
         # (Y[2] 80). The firmware measures J(q_fw) * qDot_fw through its STORED mount, i.e. another unit's: the board
         # error biases qDot (gyro projected through the wrong mount) and J (static arm error, -0.06..-0.36 deg below)
-        # -- observed -0.35 % / +0.05 % for this board; a 10 deg pitch error costs 17 % (test_valve_plant). Tolerance 1 %.
+        # -- observed -0.35 % / +0.05 % for this board (UNIT_BOARD GUESS); a 10 deg misread costs 17 % (test_valve_plant
+        # test_calib_arm_recovers_the_units_mount_from_a_wrong_stored_one_but_not_its_speed_table). Tolerance 1 % against the
+        # plant's realised peak.
         # FW: chart_2383 l.56-58, 81-82, MdlApp.c:45060; CalStrkAndSpd MdlApp.c:13453-13483; chart_2338 l.93-96.
         run = self.arm
         for port, state in (("armIn", "ArmInToPnt1"), ("armOut", "ArmOutToPnt2")):
@@ -347,24 +430,29 @@ class TestCalibArmOnTheDeckPosture(unittest.TestCase):
                 X, Y = run.plant.tables[port]
                 truth = vlv.port_speed(REF_CMD, X, Y, deadband=UNIT_DEADBAND[port], vmax=UNIT_VMAX[port])
                 seg = run.speed[run.i(run.entry[state]):run.i(run.entry[run.next_state(state)])]
-                # precondition: the lagged valve settled at 70 % before the leg ended (1 s ramp + tau 0.1 s GUESS)
-                self.assertAlmostEqual(np.abs(seg).max(), truth, delta=1e-4 * truth, msg="the plant reached it")
+                peak = np.abs(seg).max()
                 Xs, Ys = run.table(port)
                 self.assertEqual((Xs[0], Xs[1], Ys[0], Ys[2]), (0.0, IDENTIFIED_X1, 0.0, REF_CMD))
-                self.assertAlmostEqual(Xs[2], truth, delta=0.01 * truth)
-                self.assertGreater(abs(Xs[2] - self.stored[port][0][2]), 0.25, "not the stored speed")
-        self.assertAlmostEqual(run.table("armIn")[0][2], 0.11, delta=0.0011)
+                # FW: the saved speed is the peak stroke speed the plant actually realised over the leg
+                self.assertAlmostEqual(Xs[2], peak, delta=0.01 * peak)
+                # PLANT precondition: the lagged valve got to 70 % within the leg (1 s ramp + TAU_VALVE GUESS; observed
+                # peak == truth to 1e-5 relative at tau 0.1 s), so the saved speed is the valve's speed at PropVlvRefCmd
+                self.assertAlmostEqual(peak, truth, delta=0.01 * truth, msg="the plant reached its 70 % speed")
+                self.assertAlmostEqual(Xs[2], truth, delta=0.02 * truth)
+                self.assertGreater(abs(Xs[2] - run.stored(port)[0][2]), 0.25, "not the stored speed")
         self.assertAlmostEqual(vlv.port_speed(REF_CMD, *run.plant.tables["armOut"], deadband=22.39, vmax=0.14),
                                0.001 + (70.0 - 22.39) * 0.139 / (80.0 - 22.39), delta=1e-9)   # 0.11587 m/s
 
-    def test_legs_end_on_the_gravity_angle_one_step_after_the_plant_passes_it(self):
+    def test_legs_end_on_the_gravity_angle_and_the_command_ramps_down_over_one_second(self):
         # WHY: a leg that ends on the 10 s timeout still "succeeds" (MdlApp.c:25823 angle OR cnt), so the exit must be
         # shown to be the angle. angCalib.arm is measured from accRef for leg 1 and from accPnt1 for leg 2 (chart_2291
-        # l.147-153); the guard reads it through Delay4 (MdlApp.c:25823, :26040). The arm then coasts through the 1 s
-        # cubic ramp-down (chart_3055 l.194-243): observed 9.4 deg after leg 1, 6.3 deg after leg 2 at these speeds.
+        # l.147-153); the guard reads it through Delay4 (MdlApp.c:25823, :26040). The command ramps up over CntCalib_ramp
+        # at the leg entry and back down over CntCalib_ramp after the exit (SmoothPropVlvCmd, chart_3055 l.194-243), so
+        # the arm keeps moving after the angle -- the coast that decides the stop margin.
         run = self.arm
-        for leg, state, ref_state, thld in (("in", "ArmInToPnt1", "ArmPntRef_log", ANG_PNT1),
-                                            ("out", "ArmOutToPnt2", "ArmPnt1_log", ANG_PNT2)):
+        cyl, lo_hi = run.plant.cyls["arm"], run.plant.limits["arm"]
+        for leg, port, state, ref_state, thld in (("in", "armIn", "ArmInToPnt1", "ArmPntRef_log", ANG_PNT1),
+                                                  ("out", "armOut", "ArmOutToPnt2", "ArmPnt1_log", ANG_PNT2)):
             with self.subTest(leg=leg):
                 q_ref = run.q[run.i(run.entry[ref_state])]
                 np.testing.assert_array_equal(run.q[run.i(run.entry[ref_state]):run.i(run.entry[ref_state]) + LOG_TICKS],
@@ -373,11 +461,34 @@ class TestCalibArmOnTheDeckPosture(unittest.TestCase):
                 cross = run.first_tick_after(start, lambda k: abs(run.q[k] - q_ref) > thld)
                 nxt = run.next_state(state)
                 self.assertEqual(run.entry[nxt], cross + 2)
-                coast = abs(run.q[run.i(run.entry[nxt]) + STB_TICKS - 1] - run.q[run.i(cross)])
-                self.assertTrue(5.0 * DEG < coast < 10.0 * DEG, math.degrees(coast))
+                # FW: the command this port gets around the leg, exact in float32 (rows: TICK BOOKKEEPING)
+                cmd, other = run.cmd[port], run.cmd["armOut" if port == "armIn" else "armIn"]
+                self.assertGreater(run.dwell(state), RAMP_TICKS, "plant precondition: the leg outlasts the ramp-up")
+                s, e = run.i(start), run.i(run.entry[nxt])
+                self.assertEqual([float(c) for c in cmd[s:s + RAMP_TICKS]], smooth_ramp(0.0, REF_CMD))
+                self.assertEqual(set(cmd[s + RAMP_TICKS:e].tolist()), {REF_CMD})
+                self.assertEqual([float(c) for c in cmd[e:e + RAMP_TICKS]], smooth_ramp(REF_CMD, 0.0))
+                log = run.i(run.entry[run.next_state(nxt)])
+                self.assertEqual(set(cmd[e + RAMP_TICKS:log].tolist()), {0.0})
+                self.assertEqual(set(other[s:log].tolist()), {0.0})
+                # PLANT-DEPENDENT coast (vmax / TAU_VALVE GUESS; observed 9.4 deg after leg 1, 6.3 deg after leg 2): the
+                # arm still moves after the exit, is at rest again for the next 1 s log, and turns no further than its
+                # fastest 70 % joint rate over the coast range could carry it in 2 ticks + the ramp + 5 tau.
+                self.assertNotEqual(run.q[e + 1], run.q[e], "still moving after the exit")
+                q_log = run.q[log]
+                np.testing.assert_array_equal(run.q[log:log + LOG_TICKS], q_log, "at rest for the next log")
+                coast = abs(q_log - run.q[run.i(cross)])
+                X, Y = run.plant.tables[port]
+                v70 = vlv.port_speed(REF_CMD, X, Y, deadband=UNIT_DEADBAND[port], vmax=UNIT_VMAX[port])
+                qs = np.linspace(min(q_log, run.q[run.i(cross)]), max(q_log, run.q[run.i(cross)]), 64)
+                w_max = max(v70 / abs(vlv.stroke_jacobian(cyl, q)) for q in qs)
+                self.assertTrue(0.0 < coast <= w_max * ((2 + RAMP_TICKS) * DT + 5 * run.plant.tau_valve),
+                                (math.degrees(coast), math.degrees(w_max)))
         self.assertGreater(run.q[run.i(run.entry["ArmPnt1_log"])], run.q[0], "armIn raised the arm angle")
-        # top of the leg-1 coast: 144.4 deg, 10.6 deg below the 155 deg OEM-TEAM stop (strict stops would have raised)
-        self.assertLess(run.q.max(), 145.0 * DEG)
+        # PLANT-DEPENDENT stop margin: top of the leg-1 coast observed 144.4 deg against the 155 deg OEM-TEAM stop; strict
+        # stops would have raised JointStopError, asserted explicitly here.
+        self.assertEqual(run.plant.limit_hits, [])
+        self.assertLess(run.q.max(), lo_hi[1])
 
     def test_rebuilt_mount_is_the_units_board_not_the_stored_one(self):
         # WHY: the non-echo mount check. The output starts as the stored (compiled) mount, stays bit-identical until the
@@ -395,43 +506,52 @@ class TestCalibArmOnTheDeckPosture(unittest.TestCase):
         self.assertEqual(len(before), 1)
         np.testing.assert_array_equal(np.array(before.pop()).reshape(3, 3), self.compiled.astype(np.float32))
         np.testing.assert_array_equal(np.array(run.mounts[k]).reshape(3, 3), ident)
-        # the arm reading: wrong through the stored mount away from plumb, right once the result is loaded
+        # the arm reading: wrong through the stored mount away from plumb (observed -0.056 / -0.365 deg at 60 / 150 deg
+        # for UNIT_BOARD), right once the result is loaded
         self.assertGreater(abs(self.err_stored[1]), 0.3 * DEG)
         self.assertGreater(abs(self.err_stored[0]), 0.04 * DEG)
         for e in self.err_loaded:
             self.assertLess(abs(e), 1e-3 * DEG)
         self.assertLess(self.links_arm_err, 2e-6)
 
-    def test_save_rewrites_every_other_axis_table_into_the_calibration_shape(self):
-        # FINDING F4. GenCorrTblSetReqSpdToActCmd writes all 20 tables every tick with no per-axis gating: X = [0, 0.01,
-        # peak or stored X(3)], Y = [0, onset or stored Y(2), PropVlvRefCmd]; travel X = [0, 0.01, 100]; blade = identity
-        # [0 0.01 100]/[0 0.01 100]. AppCtrlIf.c:884-1012 copies all of them to the actuator NVM image while
-        # isCalibrating. So a CalibArm save changes the boom's top command 80 -> 70 %, travel 100 -> 60 %, rotator 80 ->
-        # 100 %, the blade deadband 25 -> 0.01 %, and every knee 0.001 -> 0.01 (the min-speed hold, chart_2463 l.50-69,
-        # would then creep 10x faster). Latent: this build's valve map reads parLocalTest (MdlApp.c:50340ff), unchanged.
+    def test_save_rewrites_every_other_axis_table_into_the_calibration_shape_and_par_is_untouched(self):
+        # FINDING F4 (latent in this build). GenCorrTblSetReqSpdToActCmd writes all 20 tables every tick with no per-axis
+        # gating: X = [0, 0.01, peak or stored X(3)], Y = [0, onset or stored Y(2), PropVlvRefCmd]; travel X = [0, 0.01,
+        # 100]; blade = identity [0 0.01 100]/[0 0.01 100]. AppCtrlIf.c:884-1012 copies all of them to the actuator NVM
+        # image while isCalibrating. So a CalibArm save changes the boom's top command 80 -> 70 % (next to the X[2] that
+        # belonged to 80 %), travel 100 -> 60 %, rotator 80 -> 100 %, the blade deadband 25 -> 0.01 %, and every knee
+        # 0.001 -> 0.01 (the min-speed hold, chart_2463 l.50-69, would then creep 10x faster). Latent: this build's valve
+        # map reads parLocalTest (MdlApp.c:50340ff) and nothing writes parLocalTest -- checked here against a snapshot
+        # taken BEFORE the run, which is itself the compiled table (plant.hardware = Hardware.compiled + the unit board).
         run = self.arm
+        for path, before in run.par_before.items():
+            self.assertEqual(run.par_after[path], before, f"{path}: par untouched by the run")
+            if path.startswith("par.reqSpdToActCmd."):
+                self.assertEqual(run.plant.hardware[path], before, f"{path}: the pre-run table is the compiled one")
+        for port, (X, Y) in STORED_ARM.items():
+            np.testing.assert_array_equal(run.stored(port), (np.float32(X), np.float32(Y)), port)
         for port in vlv.PORTS:
             if port in ("armIn", "armOut"):
                 continue
             with self.subTest(port=port):
-                (X, Y), (Xs, Ys) = self.stored[port], run.table(port)
+                (X, Y), (Xs, Ys) = run.stored(port), run.table(port)
                 self.assertEqual(Xs[1], IDENTIFIED_X1)
                 self.assertNotEqual(Xs[1], X[1])
-                self.assertEqual(run.fw[f"par.reqSpdToActCmd.{port}_Y"], Y, "par untouched")
                 if port.startswith("blade"):
                     self.assertEqual((list(Xs), list(Ys)), ([0.0, IDENTIFIED_X1, 100.0], [0.0, IDENTIFIED_X1, 100.0]))
                     continue
                 self.assertEqual(Ys[1], Y[1], "untouched onset command")
                 self.assertEqual(Ys[2], PROP_VLV_REF_CMD[port])
                 self.assertEqual(Xs[2], 100.0 if port.startswith("trvl") else X[2])
-        changed = {p: (self.stored[p][1][2], run.table(p)[1][2]) for p in ("bm1Up", "trvlLeFwd", "rotPosi")}
+        changed = {p: (run.stored(p)[1][2], run.table(p)[1][2]) for p in ("bm1Up", "trvlLeFwd", "rotPosi")}
         self.assertEqual(changed, {"bm1Up": (80.0, 70.0), "trvlLeFwd": (100.0, 60.0), "rotPosi": (80.0, 100.0)})
-        self.assertEqual((self.stored["bladeUp"][1][1], run.table("bladeUp")[1][1]), (25.0, IDENTIFIED_X1))
+        self.assertEqual((run.stored("bladeUp")[1][1], run.table("bladeUp")[1][1]), (25.0, IDENTIFIED_X1))
 
 
 # =======================================================================================================================
 class TestReferencePostureIsPartOfTheMount(unittest.TestCase):
-    """FINDING F1: the rebuilt mount is the true one turned until link x points along gravity AT ArmPntRef."""
+    """FINDING F1 (procedure dependency, no plausibility check): the rebuilt mount is the true one turned until link x
+    points along the reference accelerometer vector AT ArmPntRef."""
 
     def assertMountOffBy(self, run, delta):
         true = run.plant.hardware.mounts()["imuArm"]
@@ -443,7 +563,8 @@ class TestReferencePostureIsPartOfTheMount(unittest.TestCase):
         # like the plumb one; the saved mount is true @ Ry(30 deg), and once loaded the firmware reads EVERY arm angle
         # 30 deg high (R_link_fw = R_link @ Ry(delta)) -- a constant offset, no alarm, no inhibit.
         # FW: chart_2291 l.279-297 (vz = -(vy x accRef) makes link z horizontal at the reference); attitude
-        # MdlApp.c:41930-41934; joint angle = euAng(2) difference, chart_2143 l.31.
+        # MdlApp.c:41930-41934; joint angle = euAng(2) difference, chart_2143 l.31. "Plumb" = hanging down rests on
+        # ACC_SIGN = -1 (module docstring); the offset itself does not.
         plant = unit_plant(q0=dict(boom=-40.0, arm=100.0), hardware=None)
         run = calibrate_arm(plant)
         delta = plumb_error(run.ref_frame)
@@ -476,13 +597,14 @@ class TestReferencePostureIsPartOfTheMount(unittest.TestCase):
 class TestReversedArmPlumbing(unittest.TestCase):
 
     def test_backwards_arm_valve_calibrates_into_a_mirrored_mount_and_a_consistent_rate_sign(self):
-        # FINDING F2. Plumb the arm valve backwards (plant axis_sign: armIn now LOWERS the arm angle). Nothing in CalibArm
-        # checks the direction: the legs test |angle| (CalcAccVecAngle, chart_2291 l.489-496), the speed is |cyls.arm.spd|
-        # (chart_2383 l.36). The valve numbers come out as for the correct plumbing, and the rebuild's vy = -(v1 x v2)
-        # (chart_2291 l.279) flips with the direction of travel, so the saved mount is true @ diag(1, -1, -1) (a
-        # 180 deg turn about link x). Loaded, the firmware reads q_fw = 2 q_ref - q (mirror about the plumb reference)
-        # and its arm rate is POSITIVE while armIn physically lowers the arm: the firmware's model "armIn raises q"
-        # (valves.py AXIS_PORTS) holds again, so a closed loop would converge -- onto the mirrored geometry.
+        # FINDING F2 (procedure dependency: nothing checks the direction). Plumb the arm valve backwards (plant axis_sign:
+        # armIn now LOWERS the arm angle). The legs test |angle| (CalcAccVecAngle, chart_2291 l.489-496), the speed is
+        # |cyls.arm.spd| (chart_2383 l.36). In this plant (axis_sign keeps each port's valve line) the valve numbers come
+        # out as for the correct plumbing, and the rebuild's vy = -(v1 x v2) (chart_2291 l.279) flips with the direction
+        # of travel, so the saved mount is true @ diag(1, -1, -1) (a 180 deg turn about link x). Loaded, the firmware
+        # reads q_fw = 2 q_ref - q (mirror about the plumb reference) and its arm rate is POSITIVE while armIn physically
+        # lowers the arm: the firmware's model "armIn raises q" (valves.py AXIS_PORTS) holds in its own reading, so the
+        # sign of its arm feedback is not inverted -- the geometry is mirrored (no closed loop is run here).
         plant = unit_plant(axis_sign={"arm": -1.0}, hardware=None)
         run = calibrate_arm(plant, ground=dict(pitch=JACK_UP_PITCH))
         fw = run.fw
@@ -512,13 +634,18 @@ class TestReversedArmPlumbing(unittest.TestCase):
 
 # =======================================================================================================================
 class TestAccelerometerNoise(unittest.TestCase):
-    """FINDING F3. The onset detector has no filter: one raw sample against 0.5 deg of gravity angle (8.73 mg).
+    """FINDING F3 (plant-dependent: it needs a few mg of per-axis noise). The onset detector has no filter: one raw sample
+    against 0.5 deg of gravity angle (8.73 mg). That part is source (chart_2316 l.97-100; accRaw only mirrored,
+    MdlApp.c:11102-11105); whether a real arm IMU delivers that much noise after its own filtering is in no source.
 
     With white noise sigma per axis the two components across gravity make the sample's angle Rayleigh-distributed:
     P(angle > 0.5 deg) per tick = exp(-(8.73 mg)^2 / (2 sigma^2)); the 1 s reference mean is 10x quieter and ignored here.
       sigma 1 mg: 3e-17 per tick -- never in a calibration.   sigma 5 mg: 0.22 per tick -- P(no onset in 50 ticks) = 4e-6.
-    The noise is ASSUMPTION-level: the IMU's own filtering before CAN is not in any source; engine vibration on an arm is
-    commonly tens of mg. Seeds are fixed; the bounds above say why the assertions do not depend on them."""
+    The MOUNT is built from 1 s means (noise sigma/10) but is ill-conditioned: vy = -(v1 x v2) crosses two chords of
+    0.3-0.5 g that are only ~23 deg from anti-parallel (Pnt1 ~ +29 deg, Pnt2 ~ -17 deg of the reference after the coasts),
+    |v1 x v2| ~ 0.06, which amplifies the mean noise ~11x in the median, ~30x at p90 (Monte Carlo of the rebuild at this
+    geometry: max|dM| median 5.7e-3 / p99 2.2e-2 at 5 mg, 1.1e-3 / 4.2e-3 at 1 mg). The bounds below come from those
+    percentiles. Seeds are fixed; the bounds above say why the assertions do not depend on them."""
 
     def test_5mg_fires_the_onset_on_the_first_staircase_samples_and_saves_19p5_percent(self):
         # WHY: the same unit as the deck run, plus accelerometer noise. The valve never opens (20 % < 23.1 / 22.39 %), the
@@ -536,17 +663,18 @@ class TestAccelerometerNoise(unittest.TestCase):
                 self.assertEqual(set(run.cmd[port][seg]), {STAIR_START})
                 self.assertEqual(len(set(run.q[seg])), 1, "the valve never opened: 20 % < its deadband")
                 self.assertEqual(run.table(port)[1][1], STAIR_START - ONSET_CMP)
+                self.assertEqual(assert_dwell_matches_onset_step(self, run, port, state), 0)
                 # the speed comes from gyros and survives
                 truth = vlv.port_speed(REF_CMD, *plant.tables[port], deadband=UNIT_DEADBAND[port], vmax=UNIT_VMAX[port])
                 self.assertAlmostEqual(run.table(port)[0][2], truth, delta=0.01 * truth)
-        # the mount is built from 1 s means and is only mildly disturbed (observed 2e-4 with this seed; 0.012 with another
-        # seed at another posture while exploring -- hence the loose bound)
+        # the mount under 5 mg (conditioning, class docstring): observed 2e-4 with this seed; p99 of the estimate 0.022
         err = np.abs(run.identified_mount() - plant.hardware.mounts()["imuArm"]).max()
         self.assertLess(err, 0.05)
 
     def test_1mg_leaves_the_minimum_command_inside_the_staircase_window(self):
         # Control for the test above: no false onset, but the noise can move the 0.5 deg crossing by a step (observed armIn
         # 22.9 as without noise, armOut 21.9 instead of 22.1: onset on the first open step). Inside the two-step window.
+        # Mount under 1 mg: observed 6.4e-4 with this seed; p99 of the estimate 0.0042 (class docstring).
         plant = unit_plant(hardware=None, acc_noise=1e-3, seed=11)
         run = calibrate_arm(plant, ground=dict(pitch=JACK_UP_PITCH))
         self.assertEqual(len(run.emu.saved), 1)
@@ -560,37 +688,48 @@ class TestAccelerometerNoise(unittest.TestCase):
 class TestStoredValveTiming(unittest.TestCase):
 
     def test_a_unit_matching_its_stored_arm_deadbands_spends_most_of_calibarm_in_the_staircase(self):
-        # FINDING F5 / run-time budget. The plant's arm valve opens at the STORED deadbands (32.5 / 31.5 %: no deadband
-        # override); vmax stays at UNIT_VMAX (the stored 0.417 m/s coasts into the 155 deg stop from a plumb start).
-        # Each _Min state climbs from 20 % to one or two steps above the deadband: 10 s of machine time per 1 %.
-        # Observed: onset at 32.8 / 31.8 % (64 / 59 steps), ArmInMin 128.7 s, ArmOutMin 118.0 s, whole run 295.1 s,
-        # 84 % of it in the two staircases; saved 32.3 / 31.3 %, i.e. 0.2 % below the valve (same bias as above).
-        # The stored values sit on the grid a CalibArm result lands on, 20 + 0.2 k - 0.5 (32.5 = k 65, 31.5 = k 60) --
-        # as do swingRi 30.5, linkIn 30.5, linkOut 31.5, tiltNega 25.7 and tiltPosi 19.5 (the floor: onset on the first
-        # staircase sample), while swingLe 32, bm1 32/33, rot 17, travel 35/36 are round numbers. An inference about the
-        # table's history, asserted only for the arm; the knee X[1] = 0.001 is not calibration-shaped.
+        # FINDING F5 (plant-dependent: a unit whose valve opens at the stored 32.5 / 31.5 %; no deadband override); vmax
+        # stays at UNIT_VMAX (the stored 0.417 m/s coasts into the 155 deg stop from a plumb start).
+        # FIRMWARE LOWER BOUND: the valve cannot open before the staircase reaches its deadband, so each _Min lasts at
+        # least until step ceil((db - 20) / 0.2): 199 + 200 (63 - 1) = 12599 ticks (armIn) and 199 + 200 (58 - 1) = 11599
+        # (armOut), 242 s together, against 43.1 s of fixed dwell and at most 2 x 10 s of legs -- >= 79 % of CalibArm,
+        # whatever the valve line above the deadband. Observed (plant knee / lag GUESS): onset at 32.8 / 31.8 %,
+        # ArmInMin 128.7 s, ArmOutMin 118.0 s, whole run 295.1 s, 84 % in the staircases; saved 32.3 / 31.3 %.
+        # The armOut crossing comes 2 ticks after the 31.6 -> 31.8 % increment: the saved 31.3 is the NEW step (F6).
+        # TABLE HISTORY (weak evidence, not asserted): 7 of the 18 identifiable stored Y[1] (blade excluded) sit on the
+        # grid a calibration result lands on, 19.5 + 0.2 k: armIn 32.5, armOut 31.5, swingRi 30.5, linkIn 30.5, linkOut
+        # 31.5, tiltNega 25.7, tiltPosi 19.5 (bm2 is 0.001). But every value with an odd tenths digit is on that grid, so
+        # hand-typed half percents look the same; only tiltNega 25.7 and tiltPosi 19.5 (the onset-on-the-first-sample
+        # floor) are telling, and every stored knee X[1] is 0.001, not the calibration's 0.01.
         plant = unit_plant(deadband=None, hardware=None)
         run = calibrate_arm(plant, ground=dict(pitch=JACK_UP_PITCH))
         self.assertEqual(len(run.emu.saved), 1)
         self.assertEqual(run.h.curr_step(), "NoTarget")
-        for port, state, stored in (("armIn", "ArmInMin", 32.5), ("armOut", "ArmOutMin", 31.5)):
+        min_stair = 0
+        for port, state in (("armIn", "ArmInMin"), ("armOut", "ArmOutMin")):
             with self.subTest(port=port):
+                stored = run.stored(port)[1][1]
                 self.assertEqual(plant.tables[port][1][1], stored, "precondition: the plant valve is the stored one")
+                self.assertEqual(stored, STORED_ARM[port][1][1])
+                k_open = math.ceil((stored - STAIR_START) / STAIR_PCT - 1e-9)
+                min_stair += STAIR_FIRST + STAIR_TICKS * (k_open - 1)
+                self.assertGreaterEqual(run.dwell(state), STAIR_FIRST + STAIR_TICKS * (k_open - 1))
+                steps = assert_dwell_matches_onset_step(self, run, port, state)
                 y1 = run.table(port)[1][1]
-                self.assertTrue(stored <= y1 + ONSET_CMP <= stored + 2 * STAIR_PCT + 1e-5, y1)
-                steps = round((y1 + ONSET_CMP - STAIR_START) / STAIR_PCT)
-                self.assertAlmostEqual((y1 + ONSET_CMP - STAIR_START) / STAIR_PCT, steps, delta=1e-4)
-                # onset during step `steps`, which starts STAIR_FIRST + 200 (steps - 1) ticks after entry; +2 for the
-                # same-step detection and the Delay1 on the transition
-                self.assertTrue(STAIR_FIRST + STAIR_TICKS * (steps - 1) < run.dwell(state)
-                                <= STAIR_FIRST + STAIR_TICKS * steps + 2, (steps, run.dwell(state)))
-                k_stored = (stored + ONSET_CMP - STAIR_START) / STAIR_PCT
-                self.assertAlmostEqual(k_stored, round(k_stored), delta=1e-9)
+                # FW, exact: the saved value is the raw command the detecting step wrote (see the deck identification test)
+                k = run.i(run.onset_tick(state))
+                self.assertEqual(y1, f32(np.float32(run.cmd[port][k + 1]) - np.float32(ONSET_CMP)))
+                self.assertEqual(run.entry[state + "_stb"], run.onset_tick(state) + 2)
+                # PLANT-DEPENDENT window (F6), as on the deck unit
+                self.assertTrue(stored <= y1 + ONSET_CMP <= stored + 2 * STAIR_PCT + 1e-5, (y1, steps))
+        self.assertEqual(min_stair, 12599 + 11599)
         stair = run.dwell("ArmInMin") + run.dwell("ArmOutMin")
+        legs = run.dwell("ArmInToPnt1") + run.dwell("ArmOutToPnt2")
         total = run.entry["CalibStandby"] - run.entry["ArmPntRef_stb"]
-        self.assertEqual(total, FIXED_TICKS + stair + run.dwell("ArmInToPnt1") + run.dwell("ArmOutToPnt2"))
-        self.assertTrue(28500 < total < 30500, total)
-        self.assertGreater(stair / total, 0.8)
+        self.assertEqual(total, FIXED_TICKS + stair + legs)
+        self.assertLess(legs, 2 * TIMEOUT_TICKS)
+        self.assertGreaterEqual(stair / total, min_stair / (min_stair + FIXED_TICKS + 2 * TIMEOUT_TICKS))
+        self.assertGreater(min_stair / (min_stair + FIXED_TICKS + 2 * TIMEOUT_TICKS), 0.79)
 
 
 if __name__ == "__main__":

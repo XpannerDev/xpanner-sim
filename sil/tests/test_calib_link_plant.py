@@ -6,10 +6,15 @@ WHAT CALIBLINK DOES (chart_1210 CalibStepMgr, generated MdlApp.c <S179>; every n
   -> LinkPnt1_log 1 s -> LinkOutMin -> LinkOutMin_stb 8 s -> LinkOutToPnt2 -> LinkPnt2_stb 8 s -> LinkPnt2_log 1 s
   -> Link_save -> CalibStandby (CntCalib_stb 800 / _log 100, SysPar.m:102-103).
   _log      1 s running mean of the RAW input-link (bktImu) accelerometer, renormalised (chart_2291 l.74-76, 402-413).
-  _Min      propVlvCmd.<port> = 20 % + 0.2 % every 200 ticks, unfiltered (chart_3055 l.58-67, 76, 91-92, 136-141,
-            196-197; SysPar.m:105, 110, 172-173), until isMotionOnset: the gravity angle of the board since the
-            last log, |angle(acc_log, acc_raw)|, moved > 0.5 deg (chart_2291 l.155-161, chart_2316 l.76-77, 91-104,
-            SysPar.m:131). No timeout. Stores propVlvCmd - 0.5 (chart_2338 l.61-62, SysPar.m:134).
+  _Min      propVlvCmd.<port> = 20 % + 0.2 % every 200 ticks, unfiltered, capped at PropVlvCmdMinCalib_limit 100 %
+            (chart_3055 l.58-67, 76, 91-92, 136-141, 196-197; SysPar.m:105, 109-110, 172-173), until isMotionOnset:
+            the gravity angle of the board since the last log, |angle(acc_log, acc_raw)|, moved > 0.5 deg
+            (chart_2291 l.155-161, chart_2316 l.76-77, 91-104, SysPar.m:131). That is TOTAL travel since the log
+            (DetectAngMotion freezes its reference outside _Min, chart_2316 l.93-95), not a speed at the level that
+            trips it; SysPar.m:128-129 says the threshold is meant "to get stable min speed, not starting speed".
+            No timeout: LinkInMin / LinkOutMin leave only on the onset or on the shared save/abort predicate
+            (MdlApp.c:30284-30321, :30528-30563). Stores propVlvCmd - 0.5 (chart_2338 l.61-62; SysPar.m:134
+            "Delayed response compensation for motion onset value").
   _ToPnt    PropVlvRefCmd.link* = 70 % through the 1 s cubic SmoothPropVlvCmd ramp (chart_3055 l.138-143, 194-243;
             SysPar.m:149-150); ends on angCalib.link > 40 / 80 deg OR cnt > 1000 (MdlApp.c:30491, :30710;
             SysPar.m:122-123). Records the peak of |y.cyls.bkt.spd| -- the firmware's CalStrkAndSpd CYLINDER STROKE
@@ -17,19 +22,26 @@ WHAT CALIBLINK DOES (chart_1210 CalibStepMgr, generated MdlApp.c <S179>; every n
   table     X = [0, 0.01, max(0.002, peak)], Y = [0, onset - 0.5, 70] (chart_2338 l.42-43, 98-101).
   mount     vy = -cross(accPnt1 - accRef, accPnt2 - accRef), vx = -cross(vy, accRef), vz = cross(vx, vy),
             M = [vx vy vz] (chart_2291 l.303-329). Built from raw accelerometer means only.
-  Nothing checks the direction of motion (angCalib is an unsigned angle), the reference posture, or the result.
+  Apart from norm > 1e-6 guards that silently keep the previous matrix (chart_2291 l.310-323), nothing checks the
+  direction of motion (angCalib is an unsigned angle), the reference posture, or the result; a leg that ends on
+  cnt > 1000 takes the same transition as one that ends on angle (MdlApp.c:30489-30491, :30708-30711).
 
 THE PLANT (sil/plant.py, sil/valves.py; their GUESS/ASSUMPTION tags apply)
   Kinematic: stroke speed = the valve line (deadband, 0.001 m/s) -> (Y[2], vmax) behind a 0.1 s lag, turned into a
   joint rate through the firmware's own cylinder Jacobian. Accelerometer = -1 g quasi-static (no link acceleration).
+  GUESS knee: valves.effective_commands opens the valve to X[1] = 0.001 m/s on the first tick the raw command reaches
+  the deadband (no gradual flow onset, no stiction). Every _Min result below (which staircase level trips the onset,
+  and so where the identified minimum lands against the valve's opening) inherits that knee: PLANT-DEPENDENT.
   Runs strict about joint stops (the firmware would time a leg out on a stop without any alarm, MdlApp.c:30491).
   The plant's valve is deliberately NOT the stored table (PLANT_VALVE), so identification cannot be an echo:
       stored  linkIn  deadband 30.5 %, 0.588 m/s at 70 %     linkOut 31.5 %, 0.85 m/s at 90 %
       plant   linkIn  deadband 24.0 %, 0.20 m/s at 70 %      linkOut 23.0 %, 0.16 m/s at 90 % (0.1125 m/s at 70 %)
-  ASSUMPTION vmax: the stored link speeds swing the link ~53 deg past the 40 deg leg during the 1 s ramp-down
-  (TestCalibLinkRun.test_the_stored_link_table_is_not_what_calibrating_its_own_valve_returns), which with the GUESS
-  link stops (-150 / +10 deg) and the +14.2 deg dead centre leaves few start poses; every scenario here stays 20 deg
-  or more inside the stops.
+  ASSUMPTION vmax: at the stored link speeds the 1 s ramp-down after the 40 deg leg carries the link a further ~53 deg
+  (TestCalibLinkRun.test_the_stored_link_table_is_not_what_calibrating_its_own_valve_returns). With the GUESS link
+  stops (-150 / +10 deg) just below the +14.2 deg dead centre that leaves few start poses, and the start poses here
+  are HAND-PICKED: at the stored speeds a start at -84 or -90 deg runs onto the +10 deg stop (JointStopError). A
+  strict plant makes a bad pick fail loudly instead of silently timing a leg out. Every scenario here stays 20 deg
+  or more inside the stops (observed: 20.9 deg, the backwards-hose run).
 
 POSTURE (the operator deck, resources/Sensor_and_Valve_Calibration_ProductionV1.md slides 10-11)
   "Pitch angle > 5 deg, Roll angle = 0 deg", "Use the laser level to check ... (horizontal)". Every scenario stands on
@@ -39,7 +51,7 @@ POSTURE (the operator deck, resources/Sensor_and_Valve_Calibration_ProductionV1.
 
 RUN TIME  Each run is simulated in lockstep: ~126 s of machine time (~2.5 s wall) for the plant valve, ~270 s
   (~4.5 s wall) for a valve at the stored deadbands. Five runs, each cached and shared by the tests that read it:
-  the whole file takes ~18 s.
+  the whole file takes ~15-20 s.
 
 Run:  cd xpanner-sim && python3 -m unittest sil.tests.test_calib_link_plant -v
 """
@@ -138,6 +150,8 @@ def run_calib_link(q0, valve=PLANT_VALVE, pitch=DECK_PITCH, hardware=None, axis_
     r.compiled_mount = Hardware.compiled(fw).mounts()["imuLink"]
     r.unit_mount = plant.hardware.mounts()["imuLink"]
     r.stored_tables = vlv.read_tables(fw)
+    # the runtime offset added to Y(2) before the min-speed hold (chart_2463 l.19-20); AppCtrlIf.c:562 never writes it
+    r.onset_cmp = {p: fw[f"u.parMotionOnsetCmp.{p}"] for p in ("linkIn", "linkOut")}
     start = h.tick_count
     h.jump_to_step("CalibLink")
     h.run_until(lambda h: h.curr_step() == "NoTarget", 600.0, "CalibLink back in NoTarget")
@@ -182,7 +196,10 @@ def predicted_onset(plant, port, q_start):
     """Firmware-free prediction of the _Min exit: replay the staircase through the SAME valve lag / effective-command /
     table-inversion / Jacobian functions the plant integrates with, and return (staircase level at which the input
     link has moved > AngMotionOnsetThld, ticks the level had been applied). The level is float32 20 + single(k)*0.2
-    (chart_3055 l.76, 91-92); the command reaches the plant one tick after the step that wrote it."""
+    (chart_3055 l.76, 91-92); the command reaches the plant one tick after the step that wrote it.
+    A CONSISTENCY check only: it shows the firmware's IMU -> angCalib -> onset chain sees the plant's motion where the
+    plant made it. It is not an independent check of the valve model (it uses it), so anything concluded from the
+    onset level inherits the GUESS knee of valves.effective_commands."""
     X, Y = plant.tables[port]
     db, vm = plant.deadband.get(port), plant.vmax.get(port)
     dbs = vlv.deadbands(plant.tables, plant.deadband)
@@ -206,6 +223,21 @@ def staircase(k):
     return f32(np.float32(INIT_PCT) + np.float32(k) * np.float32(STEP_PCT))
 
 
+def open_level(deadband):
+    """Index of the first staircase level at or above a plant deadband."""
+    return next(k for k in range(401) if staircase(k) >= deadband)
+
+
+def plant_command_for_speed(plant, port, speed):
+    """The percent command at which the PLANT's valve line (GUESS knee, sil/valves.py) gives `speed` (table X units,
+    strictly between the line's X[1] and vmax): the inverse of vlv.port_speed on its open interval."""
+    X, Y = plant.tables[port]
+    db = vlv.deadbands(plant.tables, plant.deadband)[port]
+    v1, v2, top = float(X[1]), float(plant.vmax.get(port, X[2])), float(Y[2])
+    assert v1 < speed < v2, (port, speed, v1, v2)
+    return db + (speed - v1) * (top - db) / (v2 - v1)
+
+
 # The deck posture: chord level to gravity on the 6 deg jack-up.
 Q_BASE = dict(boom=-40.0, arm=130.0, input_link=-84.0)
 
@@ -217,7 +249,8 @@ def scenario_base():
 
 @functools.lru_cache(maxsize=None)
 def scenario_stored_valve():
-    # The stored link speeds need a lower start: observed range -125.6 .. -11.1 deg (GUESS stops -150 / +10).
+    # The stored link speeds need a lower start: observed range -125.6 .. -11.1 deg (GUESS stops -150 / +10). From
+    # Q_BASE (-84 deg) or -90 deg the linkIn coast runs onto the +10 deg stop (JointStopError, checked 2026-09-15).
     return run_calib_link(dict(boom=-40.0, arm=150.0, input_link=-104.0), valve=STORED_VALVE)
 
 
@@ -295,12 +328,22 @@ class TestCalibLinkRun(unittest.TestCase):
         self.assertEqual(dwell(r, "Link_save"), SAVE_TICKS)
         for leg in LEG_OF.values():
             self.assertLess(dwell(r, leg), TIMEOUT_TICKS, f"{leg} ended on the 10 s timeout")
-        # ... and on the plant's true angle: on the jack-up the pin axis is level, so the board's gravity angle is the
-        # joint travel since the log the leg is measured from (observed +40.45 / -80.37 deg at the last leg tick,
-        # 2-3 ticks of travel past the threshold)
-        for leg, log, thld, sign in (("LinkInToPnt1", "LinkPntRef_log", LEG1, 1.0), ("LinkOutToPnt2", "LinkPnt1_log", LEG2, -1.0)):
-            travel = sign * (rows_of(r, leg)[-1][7] - rows_of(r, log)[-1][7])
-            self.assertTrue(thld < travel < thld + 1.0 * DEG, f"{leg}: {math.degrees(travel):.2f} deg")
+        # ... and on the plant's true angle, a fixed latency after it. On the jack-up the pin axis is level, so the
+        # board's gravity angle is the joint travel since the log the leg is measured from. The plant's travel first
+        # exceeds the threshold on the second-to-last leg row: row i publishes it, step i computes angCalib.link past
+        # AngLinkPnt (chart_2291 l.155-161), the chart reads it through Delay4 one step later (MdlApp.c:30490, :30709),
+        # and row i + 2 is the next state. The latency is the firmware's and holds for any valve (checked on both
+        # valves; observed on all five runs of this file); the overshoot is those 2 ticks of whatever speed the valve
+        # gives (observed +40.45 / -80.22 deg plant valve, +41.43 / -81.20 deg stored-deadband valve).
+        for label, rr in (("plant valve", r), ("stored valve", scenario_stored_valve())):
+            for leg, log, thld, sign in (("LinkInToPnt1", "LinkPntRef_log", LEG1, 1.0),
+                                         ("LinkOutToPnt2", "LinkPnt1_log", LEG2, -1.0)):
+                with self.subTest(valve=label, leg=leg):
+                    rows, ref = rows_of(rr, leg), rows_of(rr, log)[-1][7]
+                    travel = [sign * (row[7] - ref) for row in rows]
+                    past = [i for i, t in enumerate(travel) if t > thld]
+                    self.assertEqual(past, [len(rows) - 2, len(rows) - 1],
+                                     f"{leg}: {math.degrees(travel[-1]):.2f} deg, rows past {past[:3]}.. of {len(rows)}")
         # observed: LinkInToPnt1 202 ticks, LinkOutToPnt2 511 ticks; the link never came within 30 deg of a stop
         lo, hi = r.plant.limits["input_link"]
         self.assertGreater(r.q_range[0] - lo, 30 * DEG)
@@ -309,10 +352,15 @@ class TestCalibLinkRun(unittest.TestCase):
     def test_duration_is_the_min_staircase_two_seconds_per_fifth_of_a_percent_per_direction(self):
         # WHY: the budget question. Everything but the two _Min states is fixed or short: 5 x 8 s dwell + 3 x 1 s log
         # + two legs (1-6 s together) + save. Each _Min state lasts 2 s per 0.2 % from 20 % to the level at which motion is
-        # detected, plus the time into that level: on the plant valve (24 / 23 %) the run is ~126 s, on a valve at
-        # the stored deadbands (30.5 / 31.5 %) ~270 s, of which the staircase is 83 %. There is no _Min timeout: a
-        # valve that never opens keeps it for 800 s and then forever at 100 % (test_calibration_entry).
+        # detected, plus the time into that level: on the plant valve (24 / 23 %) the run is 125.0 s, on a valve at
+        # the stored deadbands (30.5 / 31.5 %) 270.1 s, of which the staircase is 60 % / 83 % (observed). There is no
+        # _Min timeout (MdlApp.c:30284-30321, :30528-30563): a valve that never opens keeps it for 800 s and then
+        # forever at 100 % (test_calibration_entry).
         # FW: staircase chart_3055 l.58-67, 76, 91-92 (raw command during _Min, l.196-197); SysPar.m:105, 110.
+        # The bounds are DERIVED from each run's plant deadband, not pinned to PLANT_VALVE: the _Min state ends on the
+        # plant's opening level or the next one. That part is PLANT-DEPENDENT (the GUESS knee of
+        # valves.effective_commands moves the link from the opening level on); a valve with a slower flow onset would
+        # push both _Min states up by whole levels and fail the upper bound, not the bookkeeping above it.
         for label, r in (("plant valve", scenario_base()), ("stored valve", scenario_stored_valve())):
             with self.subTest(valve=label):
                 fixed = 5 * STB_TICKS + 3 * LOG_TICKS + SAVE_TICKS
@@ -320,6 +368,8 @@ class TestCalibLinkRun(unittest.TestCase):
                 mins = sum(dwell(r, s) for s in MIN_OF.values())
                 # plus 3 CalibStandby ticks: the step request, the press, the tick back to NoTarget (harness idiom)
                 self.assertEqual(r.ticks, fixed + legs + mins + 3, "every other tick of the run is in a Link state")
+                dbs = vlv.deadbands(r.plant.tables, r.plant.deadband)
+                lo = hi = 0
                 for port, state in MIN_OF.items():
                     rows = rows_of(r, state)
                     # the command during _Min is exactly the float32 staircase (row index i = entry tick + i)
@@ -330,32 +380,42 @@ class TestCalibLinkRun(unittest.TestCase):
                     level = rows[-1][2 if port == "linkIn" else 3]
                     n = round((level - INIT_PCT) / STEP_PCT)
                     self.assertTrue(n * CNT_STEP - 1 <= len(rows) < (n + 1) * CNT_STEP - 1, (state, level, len(rows)))
-                seconds = r.ticks * DT
-                if label == "plant valve":
-                    self.assertTrue(120.0 < seconds < 132.0, seconds)          # observed 125.0 s
-                    self.assertGreater(mins / r.ticks, 0.55)                  # observed 0.60
-                else:
-                    self.assertTrue(260.0 < seconds < 280.0, seconds)          # observed 270.5 s
-                    self.assertGreater(mins / r.ticks, 0.80)                  # observed 0.83
+                    k_open = open_level(dbs[port])
+                    lo += k_open * CNT_STEP - 1
+                    hi += (k_open + 2) * CNT_STEP - 1
+                self.assertTrue(lo <= mins < hi, (label, mins, lo, hi))
+                # observed 125.02 s / 270.12 s; the legs are bounded by the 10 s leg timeout each
+                self.assertTrue(fixed + 3 + lo <= r.ticks < fixed + 3 + hi + 2 * TIMEOUT_TICKS, (label, r.ticks * DT))
 
-    def test_identified_minimum_command_is_the_onset_level_minus_half_a_percent_so_below_the_valve_opening(self):
+    def test_identified_minimum_is_the_onset_level_minus_half_a_percent_and_on_this_plant_below_the_valve_opening(self):
         # WHY: this is the "identified deadband versus the plant's" check, done three ways.
-        #  1. firmware bookkeeping: Y[1] == float32(command on the last _Min tick - 0.5) (chart_2338 l.61-62);
-        #  2. that level is the one a firmware-free replay of the staircase through the plant's own valve model
-        #     predicts (predicted_onset), and the plant's recorded input link crossed 0.5 deg on that level at most
-        #     2 ticks before the firmware left _Min (IMU -> angCalib -> onset edge -> Delay4 -> chart);
+        #  1. firmware bookkeeping (plant-independent): Y[1] == float32(command on the last _Min tick - 0.5)
+        #     (chart_2338 l.61-62);
+        #  2. consistency: that level is the one predicted_onset gives by replaying the staircase through the plant's
+        #     own valve functions, and the plant's recorded input link crossed 0.5 deg on that level at most 2 ticks
+        #     before the firmware left _Min (IMU -> angCalib -> onset edge -> Delay1 -> chart, MdlApp.c:42506, :46180).
+        #     This shows the firmware sees the plant's motion; it does not validate the valve model, which it reuses;
         #  3. the level is the first or second staircase level at or above the plant deadband, never below it (the
         #     plant does not move below its deadband: the recorded travel before that level is exactly 0).
-        # FINDING (PropVlvCmdMotionOnsetDlyCmp): the staircase dwells 2 s per level, and at its opening command the
-        # valve already moves the link 0.27-0.8 deg per level (X[1] = 0.001 m/s for 2 s through J = 0.42 m/rad at the
-        # linkIn start, 0.14-0.21 m/rad where linkOut starts after the coast), so motion is detected on the opening
-        # level or the next one (<= 0.2 % late) -- yet the firmware subtracts 0.5 %. The identified minimum is BELOW the valve's opening point in every run:
-        # 23.7 for 24.0, 22.5 for 23.0 (plant valve); 30.1 for 30.5, 31.1 for 31.5 (stored-deadband valve). A
-        # minimum-speed hold that commands exactly Y[1] (chart_2463 l.50-69) then commands a closed valve. On this
-        # plant PreparePick still converges (the link reaches tolerance while the command is above Y[1]; checked in
-        # development, not asserted here), so the consequence is not demonstrated -- the bias is. It depends on the
-        # GUESSed valve line near the deadband (sil/valves.py): a valve whose flow rises more slowly would push the
-        # onset further up and could hide it.
+        # PLANT-DEPENDENT OBSERVATION (PropVlvCmdMotionOnsetDlyCmp; not a firmware defect). On this plant the identified
+        # minimum is BELOW the valve's opening in every run: 23.7 for 24.0, 22.5 for 23.0 (plant valve); 30.1 for
+        # 30.5, 31.1 for 31.5 (stored-deadband valve). The reason is the plant, not the source:
+        # valves.effective_commands (GUESS) opens the valve to X[1] = 0.001 m/s on the first tick the raw command
+        # reaches the deadband, behind only the 0.1 s GUESS lag. The link then moves 0.27-0.8 deg per 2 s level from
+        # the opening level on (J = 0.42 m/rad at the linkIn start, 0.14-0.21 m/rad where linkOut starts after the
+        # coast), so the onset trips on the opening level or the next one (<= 0.2 % late), less than the 0.5 % the
+        # firmware subtracts. SysPar.m:134 calls the 0.5 % "Delayed response compensation for motion onset value" and
+        # SysPar.m:128-129 sets the threshold "to get stable min speed, not starting speed": a real spool with stiction
+        # or a gradual flow onset trips later, and the same 0.5 % can land at or above its opening. The source does not
+        # decide which; the test_calib_rot_plant stall rests on the same GUESS knee.
+        # What Y[1] MEANS is source-level: the minimum-speed hold raises any nonzero link request to X(2) = 0.01 m/s
+        # (chart_2463 l.62-63) and interp1 returns Y(2) + u.parMotionOnsetCmp.link* there (l.19-20; AppCtrlIf.c:562
+        # leaves that inport "// To-do", 0 in this build, asserted below). So the hold commands Y[1] as the command FOR
+        # 0.01 m/s, not for the opening. On this plant 0.01 m/s needs 26.08 % (linkIn) / 26.79 % (linkOut) on the plant
+        # valve and 31.11 / 32.12 % on the stored-deadband valve. The relevant bias is therefore 2.4 / 4.3 % and
+        # 1.0 / 1.0 %, and on this plant a hold at Y[1] gives no flow at all. The effect on the link is not run here.
+        # Not an echo: the window [deadband - 0.5, deadband) is keyed to the PLANT's deadband. In the plant-valve run the
+        # stored Y[1] lies outside it (a scenario precondition, asserted), so a stored value could not pass.
         for label, r in (("plant valve", scenario_base()), ("stored valve", scenario_stored_valve())):
             for port in ("linkIn", "linkOut"):
                 with self.subTest(valve=label, port=port):
@@ -373,15 +433,26 @@ class TestCalibLinkRun(unittest.TestCase):
                     self.assertGreater(into, 3, "prediction too close to a level boundary to be exact")
                     self.assertEqual(pred, level)
                     db = vlv.deadbands(r.plant.tables, r.plant.deadband)[port]                        # 3
-                    k_open = next(k for k in range(400) if staircase(k) >= db)
+                    k_open = open_level(db)
                     self.assertIn(level, (staircase(k_open), staircase(k_open + 1)))
                     before = [row for row in rows if row[col] < db]
                     self.assertTrue(all(row[7] == q_entry for row in before), "plant moved below its deadband")
-                    self.assertLess(Y[1], db, "identified minimum is below the valve opening (FINDING)")
-                    self.assertGreaterEqual(Y[1], db - ONSET_CMP - 1e-4)
                     self.assertNotIn(Y[1], (f32(INIT_PCT - ONSET_CMP),), "19.5 = the axis never moved")
-                    if label == "plant valve":
-                        self.assertNotAlmostEqual(Y[1], r.stored_tables[port][1][1], delta=5.0, msg="not an echo")
+                    # PLANT-DEPENDENT (GUESS knee): where Y[1] lands against this valve
+                    self.assertLess(Y[1], db, "on this plant the identified minimum is below the valve opening")
+                    self.assertGreaterEqual(Y[1], db - ONSET_CMP - 1e-4)
+                    Xp, Yp = r.plant.tables[port]
+                    vm = r.plant.vmax.get(port)
+                    self.assertEqual(vlv.port_speed(Y[1], Xp, Yp, r.plant.deadband.get(port), vm), 0.0)
+                    c01 = plant_command_for_speed(r.plant, port, float(X[1]))
+                    self.assertAlmostEqual(vlv.port_speed(c01, Xp, Yp, r.plant.deadband.get(port), vm), float(X[1]),
+                                           delta=1e-9)
+                    self.assertGreater(c01 - Y[1], ONSET_CMP, "Y[1] is short of this valve's command for X[1]")
+                    # source-level: the runtime onset offset the hold would add is not wired in this build
+                    self.assertEqual(r.onset_cmp[port], 0.0)
+                    if label == "plant valve":                                                        # echo precondition
+                        stored_y1 = r.stored_tables[port][1][1]
+                        self.assertFalse(db - ONSET_CMP - 1e-4 <= stored_y1 < db, "plant and stored deadbands overlap")
 
     def test_identified_speed_is_the_plant_stroke_speed_at_the_reference_command(self):
         # WHY: X[2] is the peak of the FIRMWARE's cylinder stroke speed (J(q_fw) * qDot_fw from gyro differences,
@@ -418,14 +489,17 @@ class TestCalibLinkRun(unittest.TestCase):
         # WHY / CONTRADICTS spec A4.3 ("bm1/arm/link Xmax are byte-identical between LongArm and ShortArm and round
         # 2-figure numbers ... demand clamps"). In the compiled ShortArm set (ECR88D_ShortArm.m:326-329) linkIn is
         # X = [0; 0.001; 0.588065445], Y = [0; 30.5; 70]: nine digits, Y[2] = PropVlvRefCmd, Y[1] + 0.5 = 31.0 on the
-        # 20 + 0.2 k staircase -- the fingerprint of a CalibLink result with its knee edited back to 0.001 (LongArm has
+        # 20 + 0.2 k staircase -- consistent with a CalibLink result whose knee was set back to 0.001 (LongArm has
         # 0.28). linkOut is Y[1] 31.5 (also staircase + 0.5) but X[2] 0.85 at Y[2] 90: not calibration-shaped.
-        # Calibrating a plant whose valve IS that table does not return it: linkIn 30.1 % / 0.578 m/s (the onset bias
-        # and the estimator lag above), linkOut 31.1 % / 0.562 m/s at 70 % replacing 0.85 at 90 %.
+        # Source-level: neither table is what chart_2338 l.98-101 writes (X[1] 0.01, Y[2] = PropVlvRefCmd 70,
+        # SysPar.m:149-150), so the compiled link tables are not raw CalibLink output.
+        # PLANT-DEPENDENT: calibrating a plant whose valve IS that table does not return it: linkIn 30.1 % / 0.578 m/s
+        # (the GUESS-knee onset bias of the test above and the 3 Hz joint-LPF lag of the speed test), linkOut
+        # 31.1 % / 0.562 m/s at 70 % replacing 0.85 at 90 %.
         # The same run shows the LEG COAST (PLANT-DEPENDENT: constant stroke speed, no load): the 1 s ramp-down after
         # the 40 deg leg carries the link a further ~53 deg at the stored speed (observed 93 deg from the reference),
-        # to 25 deg below its +14.2 deg dead centre from this start; started at -90 deg it ran into the dead centre
-        # (development run). On the plant valve the coast is ~20 deg.
+        # to 25 deg below its +14.2 deg dead centre from this start. Started at Q_BASE (-84 deg) or -90 deg it runs onto
+        # the GUESS +10 deg stop (JointStopError, checked 2026-09-15). On the plant valve the coast is ~20 deg.
         r = scenario_stored_valve()
         st = r.stored_tables
         self.assertEqual((list(st["linkIn"][1]), list(st["linkOut"][1][[0, 2]])), ([0.0, 30.5, 70.0], [0.0, 90.0]))
@@ -468,10 +542,14 @@ class TestCalibLinkMount(unittest.TestCase):
         # loaded into par.imuLink the firmware reads the true link (2e-5 deg).
         # The _Min onset is accelerometer-only too: the identified minimum commands are bit-identical to the run
         # with the correct mount.
-        # FINDING: the speed table is identified through the WRONG mount -- the peak is CalStrkAndSpd(q_fw, qDot_fw)
-        # at the misread angle and misprojected gyro rate: linkIn +9.3 %, linkOut +11.4 % against the same valve with
-        # the right mount. The mount is fixed by the calibration; the table it wrote in the same run is not, until
-        # CalibLink is run again with the corrected mount loaded (same mechanism as the arm, test_valve_plant).
+        # FINDING (procedure dependency; the mechanism is source-level, the percentages are this plant's): the speed
+        # table is identified through the WRONG mount. The peak is |y.cyls.bkt.spd| (MdlApp.c:45061), CalStrkAndSpd of
+        # the firmware's joint estimate through the STORED par.imuLink, at the misread angle and misprojected gyro
+        # rate, while the new mount only exists on leaving LinkPnt2_log (chart_2291 l.303), after both legs. Here:
+        # linkIn +9.3 %, linkOut +11.4 % against the same valve with the right mount. The mount is fixed by the
+        # calibration; the table it wrote in the same run is not, until CalibLink is run again with the corrected mount
+        # loaded (same mechanism as the arm, test_valve_plant) -- and in this build nothing loads it
+        # (EnTestPar = true, SysPar.m:5, folds every *Stored inport to parLocalTest; load_identified_mount).
         r, base = scenario_unit_board(), scenario_base()
         identified_mount = mount_from(r.saves[0], "y.imuMntOri_link")
         self.assertLess(np.abs(identified_mount - r.unit_mount).max(), 1e-4)
@@ -503,16 +581,25 @@ class TestCalibLinkMount(unittest.TestCase):
         self.assertGreater(abs(axis[1]), 0.9999, f"about the pin axis: {axis}")
         self.assertAlmostEqual(math.degrees(r.after.err_after_load), 6.0, delta=0.01)
         self.assertGreater(abs(r.after.outp_err), 6.0 * DEG)
-        # the same valve numbers as the gravity-level run: the posture error is invisible in the saved table
+        # the saved table does not show the posture error: the identified speeds match the gravity-level run within 1 %
+        # (observed +0.06 % / -0.07 %), an order below the +9.3 % / +11.4 % a wrong mount puts into them
+        # (test_a_unit_board_...). The minimum commands sit in the same [deadband - 0.5, deadband) window but need not
+        # be equal: the different start pose changes the Jacobian and linkOut trips one level later (22.7 vs 22.5 %).
         base = scenario_base()
         for port in ("linkIn", "linkOut"):
-            self.assertAlmostEqual(identified(r, port)[0][2], identified(base, port)[0][2], delta=0.01)
+            with self.subTest(port=port):
+                X, Y = identified(r, port)
+                Xb = identified(base, port)[0]
+                self.assertAlmostEqual(X[2] / Xb[2], 1.0, delta=0.01)
+                db = PLANT_VALVE["deadband"][port]
+                self.assertTrue(db - ONSET_CMP - 1e-4 <= Y[1] < db, Y[1])
 
     def test_a_backwards_link_hose_calibrates_silently_into_a_mount_turned_180_deg(self):
-        # WHY / FINDING: angCalib.link is an UNSIGNED gravity angle (CalcAccVecAngle, chart_2291 l.489-496) and no
-        # state checks which way the link went. With linkIn and linkOut plumbed backwards (plant axis_sign) the run
-        # completes, both legs end on angle, the same per-port minimum commands and speeds are saved, no inhibit bit
-        # changes -- and the rebuilt mount is the unit's turned 180 deg about the board-to-link Z axis:
+        # WHY / FINDING (source-level, latent in this build): angCalib.link is an UNSIGNED gravity angle
+        # (CalcAccVecAngle, chart_2291 l.489-496) and no state checks which way the link went. With linkIn and linkOut plumbed backwards (plant axis_sign) the run
+        # completes, both legs end on angle, the per-port minimum commands land in the same window and the speeds within
+        # 1 % of the correct plumbing, no inhibit bit changes -- and the rebuilt mount is the unit's turned 180 deg
+        # about the board-to-link Z axis:
         # vy = -cross(v1, v2) flips with the rotation sense, vx follows, vz does not (M @ diag(-1, -1, 1)).
         # Loaded, the firmware's input-link angle is the true one MIRRORED about the level chord,
         # q_fw = -2 (pitch + boom + arm) - q (observed -108.9 deg for a true -39.1 deg; the four-bar output link 94 deg
@@ -520,8 +607,10 @@ class TestCalibLinkMount(unittest.TestCase):
         # moves both estimates the way the firmware's model of linkIn expects: the reversed hose now closes every loop
         # sign, around an absolute link angle that is wrong by twice the chord's pitch (70 deg here) and a tool
         # attitude that is wrong by more. In this build the mount is an outport only (never loaded,
-        # test_calibration_entry), so this is latent until the NVM restore is wired. The boom and arm rebuilds have
-        # the same structure (chart_2291 l.219-301) and should share the defect (not run here).
+        # test_calibration_entry), so this is latent until the NVM restore is wired. The boom rebuild (chart_2291
+        # l.219-245) is the same construction and should share it (not run); the arm's (l.275-301) builds vz from the
+        # reference instead and comes back turned 180 deg about link x
+        # (test_calib_arm_plant.test_backwards_arm_valve_calibrates_into_a_mirrored_mount_and_a_consistent_rate_sign).
         r = scenario_backwards_hose()
         self.assertEqual(tuple(s[0] for s in r.segs), LINK_SEQUENCE)
         self.assertEqual(r.final["curr_step"], "NoTarget")
@@ -558,8 +647,11 @@ class TestCalibLinkDeckGeometry(unittest.TestCase):
 
     def test_the_decks_connecting_rod_cannot_be_the_link_that_must_be_level(self):
         # UNEXPLAINED (question for Olivia/David): deck slide 11 says "check connecting rod joints position
-        # (horizontal)"; the rebuild needs the INPUT-LINK chord level (the bktImu frame is R_arm * Ry(ArmToInpLink),
-        # MdlApp.c:11670-11684; the compiled imuLink comes back with that chord level, TestCalibLinkMount). Through the
+        # (horizontal)"; the rebuild needs the INPUT-LINK chord level. The bktImu board is carried by the input link:
+        # bktImu goes through par.imuLink (ImuToLink_Link, MdlApp.c:41945-41948), its Euler pitch minus the arm's is
+        # ArmToInpLink (MdlApp.c:11680-11682), and that is the four-bar INPUT (MdlApp.c:11777-11778). The frame model
+        # R_arm * Ry(ArmToInpLink) is sil.kinematics.link_frames, which reproduces the firmware's joint angles
+        # (test_imu_kinematics); the compiled imuLink comes back with that chord level (TestCalibLinkMount). Through the
         # firmware's own four-bar the connecting rod is 88-148 deg from the input link over the GUESS joint range
         # (input link -150 .. +10 deg), at least 32 deg from parallel, and 88-135 deg (>= 45 deg from parallel) over
         # the -130 .. -10 deg these calibrations sweep: the two are never level together, and read literally the deck
