@@ -30,8 +30,10 @@ HOW AUTO STATES ARE REACHED WITHOUT A PLANT
   PickingInhibited handler :23053-23200) and a StartPause edge then runs it (S136:191, 202,
   215). Harness.jump_to_step() is that route. Jumps exercised here start from Standby,
   PickingInhibited, PlacingPaused and PositioningPaused; the other Paused/Inhibited handlers
-  carry the same guards but are not exercised in this file. A jump from a RUNNING state does
-  nothing.
+  carry the same guards but are not exercised in this file. While Picking or EngagingVacuum
+  RUNS, a changed autoReqStep is ignored: neither running handler reads it (MdlApp.c:22975-23043,
+  :40158-40229; TestAutoVacuum.test_step_request_is_ignored_while_picking_or_engaging_vacuum_runs).
+  Other running states are not exercised here.
 
   The REAL entry into EngagingVacuum (T475) needs no motion either (TestStaticPickingRoute):
   a static IMU pose at the PreparePose targets (Harness.set_pose) reaches ApproachPanel, and
@@ -46,6 +48,7 @@ import unittest
 
 import numpy as np
 
+from sil import kinematics as kin
 from sil.harness import Harness
 
 PRESSURE_ATTACHED = -0.45     # SysPar.m:81, literal -0.45F at MdlApp.c:39045
@@ -59,7 +62,9 @@ RECEIVER_ONESHOT_TICKS = 500  # Switch1 reload 500.0F, MdlApp.c:48556/48587/4861
 PICKING_READY_TICKS = 100     # S231:8 after(1, sec), MdlApp.c:48441-48443
 CONTACT_CONFIRM_TICKS = 20    # S155 cnt >= CntSuctionContactConfirmDly, SysPar.m:465, MdlApp.c:39024
 LED_HALF_PERIOD_TICKS = 50    # S132:119/121 after(0.5, sec), MdlApp.c:49973, :49994
+SMOOTH_RAMP_TICKS = 120       # CntRampTimeBm1/Arm/Link, SysPar.m:416-419; rtCP_pooled53 (120U) MdlApp.c:1771
 LAT_TOL, LON_TOL = 0.20, 0.10  # LatPositioningTol / LonPositioningTol, SysPar.m:446-447, MdlApp.c:47703/47716
+HEADING_TOL_DEG = 3.5         # UcHeadingTol pi/180*3.5, SysPar.m:448; 0.0610865243F at MdlApp.c:47690
 FRONT_PORTS = ("bm1Up", "bm1Down", "armIn", "armOut", "linkIn", "linkOut")
 
 # <X>Paused state the tablet jump lands in (chart_2537 state names, fw.chart_states['main']).
@@ -148,22 +153,25 @@ def jump(h, step, start=True):
     return h
 
 
-def picking_with_static_plant(origin=None):
+def picking_with_static_plant(origin=None, yaw_deg=0.0):
     """Running Picking with the IMUs at PREPARE_POSE_DEG. With `origin`, a bare-TM site and both
-    antenna fixes for a chassis at that site position facing grid East. Site and antennas are
-    written before boot (Localization never sees zero blh); the pose after boot, because
-    nominal_inputs() publishes the rest pose."""
+    antenna fixes for a chassis at that site position facing grid East, turned `yaw_deg`
+    counter-clockwise (antennas and chassis IMU agree). Site and antennas are written before
+    boot (Localization never sees zero blh); the pose after boot, because nominal_inputs()
+    publishes the rest pose."""
+    R = kin.Rz(math.radians(yaw_deg)) if yaw_deg else None
     h = Harness().reset()
     if origin is not None:
         h.gnss_site()
-        h.place_chassis(origin)
+        h.place_chassis(origin, R)
     boot_to_standby(h)
-    h.set_pose(**{k: math.radians(v) for k, v in PREPARE_POSE_DEG.items()})
+    h.set_pose(R_chs=R, **{k: math.radians(v) for k, v in PREPARE_POSE_DEG.items()})
     return jump(h, "Picking")
 
 
-def approach_panel(origin=None):
-    h = picking_with_static_plant(origin)
+def approach_panel(origin=None, yaw_deg=0.0):
+    """As picking_with_static_plant(), returned on the first tick that reports ApproachPanel."""
+    h = picking_with_static_plant(origin, yaw_deg)
     h.run_until(lambda h: h.picking_step() == "PickingStep_ApproachPanel", 1.0, "ApproachPanel")
     return h
 
@@ -532,29 +540,57 @@ class TestContactDebounce(unittest.TestCase):
         # contact model has to report all four for 20 ticks before bm1/arm/link let go. And it
         # needs NO motion to test: a static IMU pose at the PreparePose targets reaches
         # ApproachPanel.
+        # The valves do NOT reach 0 "within 0.2 s of the fourth cup" (spec A6 step 4). The
+        # bm1/arm/link speed requests pass through a 120-tick smooth-step that restarts on the
+        # FIRST ApproachPanel tick; once the flag zeroes the controller output the request is
+        # (1 - ramp) * (request at entry), floored at the valve's motion-onset opening
+        # (30.5-33 %) while > 0. The request DECAYS along the smooth-step and meets that floor
+        # only in the last few ticks; everything is 0 on ApproachPanel tick 119 (entry = tick 0),
+        # or on the flag tick if that comes later. Cups seated on tick 1: flag on tick 20 with
+        # bm1Up still ~62 % and armIn ~47 %, ~34 % by tick 100, floors on ticks 114-115, 0 on 119
+        # (verifier probe) -- the front end pushes HARD on the seated cups for most of 1.19 s, and
+        # the link valve reverses (linkOut before the flag, linkIn after). Cups seated from tick
+        # ~115 on: straight to the floor or 0. The plant's cups and panel must take that push.
         # RULE: PreparePick -> ApproachPanel on isTarActuatorReached rotate&bm1&arm&link
         # (S137:37, MdlApp.c:40535-40548); in ApproachPanel, areAllSuctionCupsInContact sets
         # ctrlMode bm1/arm/link = Disabled (S142:1:78-81, MdlApp.c:7863-7873), which zeroes
-        # each axis controller output (e.g. arm S32/Switch, MdlApp.c:46324-46334). The decay
-        # of the valve command after that is downstream shaping and is only bounded here.
+        # each axis controller output (e.g. arm S32/Switch, MdlApp.c:46324-46334).
+        # isTargetChanged = pickingStepPrev ~= ApproachPanel (S142:1:73-76, MdlApp.c:7850-7861)
+        # triggers SmoothStepScalar_bm1/arm/link (S38, MdlApp.c:2616-2697; calls :46455, :46848,
+        # :46856): trig -> cnt = 0, yStart = yOld; cnt = min(cnt + 1, 120); ramp = t^2 (3 - 2t);
+        # y = ramp*u + (1 - ramp)*yStart; cntRamp = SMOOTH_RAMP_TICKS. Request > 0 is raised to
+        # table X(2), i.e. valve Y(2) (S140:1:50-67, MdlApp.c:50556-50707; Y(2) + the
+        # parMotionOnsetCmp inport, 0 here, S140:1:13-20). S155 (:39024),
+        # SetCtrlMode (:46201) and the smoothing all run in the same MdlApp_Subsystem step.
         h = approach_panel()                                  # control: no contacts, no freeze
         for _ in range(300):
             h.tick()
             self.assertGreater(front_valves(h), 0.0, h.describe())
         self.assertEqual(h.picking_step(), "PickingStep_ApproachPanel")
 
-        h = approach_panel()
-        h.fw["u.isSuctionCupContact"] = [1, 1, 1, 1]
-        seq = []
-        for _ in range(300):
-            h.tick()
-            seq.append((h.fw.internal("all_cups_in_contact"), front_valves(h)))
-        flip = [f for f, _ in seq].index(1) + 1
-        self.assertEqual(flip, CONTACT_CONFIRM_TICKS)
-        self.assertTrue(all(v > 0.0 for _, v in seq[:flip - 1]))
-        after = [v for _, v in seq[flip - 1:]]
-        self.assertTrue(all(b <= a for a, b in zip(after, after[1:])), "front valves rose after the freeze")
-        self.assertEqual(after[-150:], [0.0] * 150)               # at rest within 1.5 s of the flip
+        ramp_end = SMOOTH_RAMP_TICKS - 1                      # the entry tick is ramp count 1
+        n = 300
+        for first in (1, ramp_end - CONTACT_CONFIRM_TICKS, ramp_end - CONTACT_CONFIRM_TICKS + 2):
+            with self.subTest(first_contact_tick=first):
+                h = approach_panel()                          # ApproachPanel tick 0
+                rows = []
+                for k in range(1, n + 1):
+                    if k == first:
+                        h.fw["u.isSuctionCupContact"] = [1, 1, 1, 1]
+                    h.tick()
+                    rows.append((h.fw.internal("all_cups_in_contact"), h.valves()))
+                flag = [f for f, _ in rows].index(1) + 1
+                self.assertEqual(flag, first + CONTACT_CONFIRM_TICKS - 1)
+                zero = max(ramp_end, flag)                     # 119, 119, 120
+                front = [sum(v.get(p, 0.0) for p in FRONT_PORTS) for _, v in rows]
+                self.assertEqual(run_lengths(s == 0.0 for s in front), [(False, zero - 1), (True, n - zero + 1)])
+                after = front[flag - 1:]
+                self.assertTrue(all(b <= a for a, b in zip(after, after[1:])), "front valves rose after the freeze")
+                if flag < ramp_end:                           # held at the onset opening, then a step to 0
+                    last = {p: x for p, x in rows[zero - 2][1].items() if p in FRONT_PORTS}
+                    self.assertTrue(last)
+                    for p, x in last.items():
+                        self.assertAlmostEqual(x, h.fw[f"par.reqSpdToActCmd.{p}_Y"][1], places=4, msg=p)
         # No GNSS here, so T475's isUcPoseAligned (Delay11, MdlApp.c:23023-23024) is false:
         # TestStaticPickingRoute supplies it.
         self.assertEqual((h.curr_step(), h.picking_step()), ("Picking", "PickingStep_ApproachPanel"))
@@ -623,25 +659,51 @@ class TestStaticPickingRoute(unittest.TestCase):
         self.assertEqual(pump, PICKING_READY_TICKS + 2)
         self.assertLess(pump - t475, PICKING_READY_TICKS)
 
-    def test_undercarriage_lat_lon_tolerances_gate_t475(self):
+    def test_undercarriage_lat_lon_heading_tolerances_gate_t475(self):
         # WHY: how precisely the plant's GNSS/track model must park the undercarriage for the
-        # pick: outside 0.20 m lateral or 0.10 m longitudinal the four cups can be down forever
-        # and the firmware stays in Picking with no inhibit.
-        # RULE: isLatAligned = |distToWpTar_lat| < LatPositioningTol, isLonAligned =
-        # |distToWpTar_lon| < LonPositioningTol (S111:1:14-15, MdlApp.c:47703, :47716; SysPar.m:
-        # 446-447), held CntSettleTimeReq = 30 ticks (S111:1:27-35, :47726-47749, SysPar.m:431).
-        cases = [("lon +0.095", (0.095, 0.0), True), ("lon +0.105", (0.105, 0.0), False),
-                 ("lon -0.105", (-0.105, 0.0), False), ("lat +0.195", (0.0, 0.195), True),
-                 ("lat +0.205", (0.0, 0.205), False)]
-        for label, (de, dn), enters in cases:
+        # pick: 0.20 m lateral, 0.10 m along the path and 3.5 deg of heading, all strict and
+        # unsigned. Outside any of them the four cups stay down and the firmware stays in running
+        # Picking/ApproachPanel with no inhibit (30 s shown here; the running Picking handler has
+        # no timer guard), so the harness must own the step-4 timeout.
+        # RULE: T475 reads Delay11(isUcPoseAligned) (MdlApp.c:23023-23024). EvalPositioningSts
+        # S111 (MdlApp.c:47679-47749): isUcPathAligned = |distToWpTar_lat| < LatPositioningTol
+        # (0.2F, :47703) && |ucHeadingErr| < UcHeadingTol && |ucPathHeadingErr| < UcHeadingTol
+        # (0.0610865243F, :47690) && ctrlMode.trvlLe == Enabled && ctrlMode.trvlRi == Enabled
+        # (S111:1:13-22); isUcPoseAligned = isUcPathAligned && |distToWpTar_lon| <
+        # LonPositioningTol (0.1F, S111:1:24-25, :47716), held CntSettleTimeReq = 30 ticks
+        # (S111:1:27-35, :47725-47749). SysPar.m:431, :446-448. ApproachPanel enables both
+        # tracks (S142:1:67-68, MdlApp.c:7835-7839), so the travel term holds in every case below.
+        # y.dbg_F64_P39 = the unsettled isUcPathAligned (MdlApp.c:50306), which tells the lon
+        # term apart from the lat/heading terms. Running Picking exits only on S136:231
+        # (stop/pause), S136:234 (inhibit || isPanelAttached) and S136:475 (MdlApp_Picking,
+        # MdlApp.c:22975-23043).
+        # (label, grid dE, grid dN, yaw deg, path aligned, enters)
+        cases = [("lon +0.099", LON_TOL - 0.001, 0.0, 0.0, True, True),
+                 ("lon +0.101", LON_TOL + 0.001, 0.0, 0.0, True, False),
+                 ("lon -0.101", -LON_TOL - 0.001, 0.0, 0.0, True, False),
+                 ("lat +0.199", 0.0, LAT_TOL - 0.001, 0.0, True, True),
+                 ("lat +0.201", 0.0, LAT_TOL + 0.001, 0.0, False, False),
+                 ("lat -0.201", 0.0, -LAT_TOL - 0.001, 0.0, False, False),
+                 ("yaw +3.49", 0.0, 0.0, HEADING_TOL_DEG - 0.01, True, True),
+                 ("yaw +3.51", 0.0, 0.0, HEADING_TOL_DEG + 0.01, False, False),
+                 ("yaw -3.51", 0.0, 0.0, -HEADING_TOL_DEG - 0.01, False, False)]
+        for label, de, dn, yaw, path_aligned, enters in cases:
             with self.subTest(label):
-                h = approach_panel((UC_WAYPOINT_CHS[0] + de, UC_WAYPOINT_CHS[1] + dn, 0.0))
-                # Grid East is the path direction here: lon follows E, lat follows N (unsigned).
-                self.assertAlmostEqual(h.fw["y.dbg_F64_P18"], abs(de), delta=1e-3)
-                self.assertAlmostEqual(h.fw["y.dbg_F64_P17"], abs(dn), delta=1e-3)
+                h = approach_panel((UC_WAYPOINT_CHS[0] + de, UC_WAYPOINT_CHS[1] + dn, 0.0), yaw)
+                # Grid East is the path direction here: lon follows E, lat follows N (unsigned;
+                # float32 residual ~3e-6 m). Yawing about the chassis origin moves neither.
+                self.assertAlmostEqual(h.fw["y.dbg_F64_P18"], abs(de), delta=1e-4)
+                self.assertAlmostEqual(h.fw["y.dbg_F64_P17"], abs(dn), delta=1e-4)
+                self.assertAlmostEqual(math.degrees(h.fw["y.machHeading"]), 90.0 - yaw, delta=1e-3)
+                self.assertEqual(h.fw["y.dbg_F64_P39"], 1.0 if path_aligned else 0.0)
                 h.fw["u.isSuctionCupContact"] = [1, 1, 1, 1]
-                h.tick(100)
-                self.assertEqual(h.curr_step(), "EngagingVacuum" if enters else "Picking", h.describe())
+                h.tick(100 if enters else 3000)
+                if enters:
+                    self.assertEqual(h.main_state(), "EngagingVacuum", h.describe())
+                else:
+                    self.assertEqual((h.main_state(), h.picking_step()), ("Picking", "PickingStep_ApproachPanel"),
+                                     h.describe())
+                self.assertTrue(h.is_running())
                 self.assertFalse(h.auto_inhibited())
 
 
@@ -729,6 +791,30 @@ class TestAutoVacuum(unittest.TestCase):
         h.pulse("u.jstAutoReq_StartPause")
         h.run_until(lambda h: h.main_state() == "ReadyToPlace", 0.02, "skips to ReadyToPlace")
         self.assertEqual(pumps(h), (False, False))
+
+    def test_step_request_is_ignored_while_picking_or_engaging_vacuum_runs(self):
+        # WHY: a plant or scenario script cannot skip the contact / vacuum guards by writing
+        # autoReqStep while the step runs; the tablet jump only works once the step is paused
+        # (or from Standby / Inhibited). This is why Harness.jump_to_step() refuses while running.
+        # RULE: running Picking exits only on S136:231 (stop/pause), S136:234 and S136:475
+        # (MdlApp_Picking, MdlApp.c:22975-23043); running EngagingVacuum only on S136:192, :189
+        # and :257 (MdlApp.c:40158-40229). Neither reads autoReqStep. PickingPaused ->
+        # VacuumPaused on a changed request is S136:179 (MdlApp.c:23362).
+        h = boot_to_standby(self.h)
+        jump(h, "Picking")
+        for step in ("EngagingVacuum", "Releasing", "Standby", "Positioning"):
+            h.request_step(step)
+            h.tick(20)
+            self.assertEqual((h.main_state(), h.is_running()), ("Picking", True), f"request {step}")
+        h.pulse("u.jstAutoReq_StartPause")                     # control: the same write once paused
+        h.run_until(lambda h: h.main_state() == "PickingPaused", 0.05, "PickingPaused")
+        jump(h, "EngagingVacuum", start=False)                 # asserts VacuumPaused
+        h.pulse("u.jstAutoReq_StartPause")
+        h.run_until(lambda h: h.main_state() == "EngagingVacuum" and h.is_running(), 0.05, "EngagingVacuum")
+        for step in ("Releasing", "Placing", "Standby", "Picking"):
+            h.request_step(step)
+            h.tick(20)
+            self.assertEqual((h.main_state(), h.is_running()), ("EngagingVacuum", True), f"request {step}")
 
     def test_engaging_vacuum_pump_waits_for_one_second_of_all_four_contacts(self):
         # WHY: the auto pump start is gated by a SECOND contact debounce the spec does not
@@ -872,7 +958,8 @@ class TestAutoVacuum(unittest.TestCase):
         # paused count (ReleasingPaused still reports CurrStep = Releasing). The real trap is
         # resuming > 5 s after the cups seated: confirmations have expired, the cups are still
         # down, no new edge arrives, and the machine waits forever. Re-seating ONE cup does not
-        # help: all four must re-seat within 5 s of each other.
+        # help: all four must re-seat within 5 s of each other (as spec step 9 already states;
+        # confirmed here, not a contradiction).
         # RULE: S238:11 hasChanged(StartStopSts) at 48800 before S238:16 at 48815 (MdlApp.c);
         # one-shot reload 500 on rising edge, else previous - 1 (MdlApp.c:48553-48661);
         # AllCatcherConfirmed = AND of all four (MdlApp.c:48674-48678).

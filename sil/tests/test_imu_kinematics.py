@@ -56,7 +56,6 @@ SETTLING
 Run:  cd xpanner-sim && python3 -m unittest sil.tests.test_imu_kinematics -v
 """
 import math
-import re
 import unittest
 from pathlib import Path
 
@@ -115,10 +114,11 @@ def fwmat(v9):
 _URDF_IMU_CACHE = {}
 
 
-def urdf_imu_mounts(variant="ECR88_US1_2P1M"):
+def urdf_imu_mounts(variant):
     """imu_mount name -> (parent link, [r, p, y]) from the asset EXPANDED for one machine_variant.
     Since f2a3923 the rpy are per-variant xacro properties (ecr88_params.xacro branches), so the
-    xacro source no longer carries literals; expanding is the only faithful read."""
+    xacro source no longer carries literals; expanding is the only faithful read. No default:
+    which unit's frames a test uses is the point of the test, so every caller names it."""
     if variant not in _URDF_IMU_CACHE:
         import subprocess
         import xml.etree.ElementTree as ET
@@ -138,7 +138,11 @@ def firmware_readout(fw, seen):
     """What the firmware reports for the link attitudes it SEES (linkOri per port), written from
     the source formulas: e2 differences (MdlApp.c:11670-11684), four-bar (:11777-11800, via
     kin.fourbar_output), tilt drift removal (:12187-12376). Kept here, not in sil.kinematics:
-    a correct plant never needs it; it exists to PREDICT the error of a wrong publisher."""
+    a correct plant never needs it; it exists to PREDICT the error of a wrong publisher.
+    `seen` must be orthonormal: the firmware rebuilds R1/R2 from Euler angles (:12188, :12257),
+    so a non-unit quaternion enters only through its Euler angles (see euler312_seen).
+    The drift division by g mirrors :12321-12322 line for line; it scales both atan2 arguments
+    and cancels, so it changes nothing unless g is exactly 0."""
     E = {k: euler312(R) for k, R in seen.items()}
     qb = wrap(E["bm1"][1] - E["chs"][1])
     qa = wrap(E["arm"][1] - E["bm1"][1])
@@ -156,14 +160,37 @@ def firmware_readout(fw, seen):
             "TiltMntToTilt": math.atan2(Rt[2, 1], Rt[1, 1])}
 
 
-def fourbar_singular_q_inp(fw):
-    """Input-link angle where the Freudenstein half-angle form is 0/0 on the firmware's branch:
-    kC - kB = 0 and -kA + sqrt(det) = 0 together (kA < 0 there). From kC = kB:
-    cos(angInp) = (2cd - a^2 + b^2 - c^2 - d^2) / (2a(c - d))."""
+def fourbar_terms(fw, q_inp):
+    """(kA, kB, kC, det) of the firmware's Freudenstein form, same algebra as kin.fourbar_output
+    (MdlApp.c:11145-11190). Only used to state the singularity preconditions."""
+    k = lambda n: fw[f"par.parKin.{n}"]
+    a, b, c, d = k("lenInpLink"), k("lenConnRod"), k("lenOutpLink"), k("lenGndLink")
+    ang = q_inp - k("angArmToGndLink")
+    kA = -2 * a * c * math.sin(ang)
+    kB = 2 * c * (d - a * math.cos(ang))
+    kC = a * a - b * b + c * c + d * d - 2 * a * d * math.cos(ang)
+    return kA, kB, kC, kA * kA + kB * kB - kC * kC
+
+
+def fourbar_singular_q_inp(fw, root=-1):
+    """Input-link angle where kC = kB: cos(angInp) = (2cd - a^2 + b^2 - c^2 - d^2) / (2a(c - d)).
+    There det = kA^2, so the half-angle numerator -kA + sqrt(det) = -kA + |kA|. On the root
+    returned by default (root=-1, angInp < 0) kA = -2ac sin(angInp) > 0, the numerator is 0 too
+    and the firmware's branch is 0/0. On the other root (root=+1) kA < 0, the numerator is 2|kA|
+    and atan2 is well defined."""
     k = lambda n: fw[f"par.parKin.{n}"]
     a, b, c, d = k("lenInpLink"), k("lenConnRod"), k("lenOutpLink"), k("lenGndLink")
     cos_inp = (2 * c * d - a * a + b * b - c * c - d * d) / (2 * a * (c - d))
-    return -math.acos(cos_inp) + k("angArmToGndLink")
+    return root * math.acos(cos_inp) + k("angArmToGndLink")
+
+
+def euler312_seen(R_link, norm_sq):
+    """The orthonormal attitude the firmware's tilt solve works with when the IMU quaternion has
+    squared norm norm_sq: R = |q|^2 R_link, e1 = asin(R32) (MdlApp.c:10917-10925, :11066) shrinks,
+    e2 and e3 are atan2 of ratios (:11069, :11074) and survive, and R1/R2 are rebuilt from these
+    three angles (:12188, :12257)."""
+    _, e2, e3 = euler312(R_link)
+    return kin.Rz(e3) @ kin.Rx(math.asin(norm_sq * R_link[2, 1])) @ kin.Ry(e2)
 
 
 def discrete_outputs(fw):
@@ -284,10 +311,15 @@ class TestMountMatrices(ImuCase):
         # WHY: decides whether the Isaac publisher must renormalise (CAN quantisation leaves
         # |q| != 1). The firmware never normalises: r11 = qw^2+qx^2-qy^2-qz^2 (MdlApp.c:10917),
         # so R scales by |q|^2. The Y joints survive (e2 = atan2 of a ratio, :11069) but
-        # e1 = asin(R32) (:11066) does not, and the tilt drift estimate divides R2 terms by R1
-        # norms (:12321-12323). A sign flip leaves every product of two components unchanged.
+        # e1 = asin(|q|^2 R32) (:11066) does not. Tilt moves ONLY through that e1: the tilt solve
+        # rebuilds R1 from the chassis Euler angles and R2 from the tilt link's (:12188, :12257),
+        # both orthonormal, so a short chassis quaternion shifts R1 and a short tilt quaternion
+        # shifts R2. (The division in the drift estimate, :12321-12322, scales both atan2
+        # arguments and cancels; it is not a norm path.) Asserted by predicting the firmware's
+        # tilt from the shrunken e1 alone (euler312_seen + firmware_readout).
+        # A sign flip leaves every product of two components unchanged.
         R_chs = kin.rpy_to_R(8 * DEG, 6 * DEG, 40 * DEG)
-        self.pose(R_chs, -40 * DEG, 100 * DEG, -30 * DEG, 12 * DEG)
+        frames = self.pose(R_chs, -40 * DEG, 100 * DEG, -30 * DEG, 12 * DEG)
         self.assertAlmostEqual(np.linalg.norm(self.fw["u.chsImuQuat"]), 1.0, places=6,
                                msg="precondition: kin.publish_imus writes unit quaternions")
 
@@ -313,10 +345,23 @@ class TestMountMatrices(ImuCase):
         self.assertAngle(self.fw["y.chs.euAng"][1], ref[1][1], what="chassis pitch")
         self.assertGreater(abs(self.q("TiltMntToTilt") - ref[2]), 0.3 * DEG)   # observed 0.509 deg
 
+        def norm_sq(port):          # as the firmware holds it (float32 inport)
+            return sum(c * c for c in self.fw[f"u.{port}ImuQuat"])
+
+        def predicted_tilt(short_port):
+            seen = dict(frames)
+            seen[short_port] = euler312_seen(frames[short_port], norm_sq(short_port))
+            return firmware_readout(self.fw, seen)["TiltMntToTilt"]
+        # observed 7e-5 deg; an unchanged-e1 prediction would be off by the whole 0.509 deg
+        self.assertAngle(self.q("TiltMntToTilt"), predicted_tilt("chs"), tol=0.001 * DEG,
+                         what="tilt with a short chassis quaternion, predicted from chassis e1 alone")
+
         self.fw["u.chsImuQuat"] = published["chs"]
         self.fw["u.tiltImuQuat"] = [0.98 * c for c in published["tilt"]]
         self.settle()
         self.assertGreater(abs(self.q("TiltMntToTilt") - ref[2]), 0.01 * DEG)  # observed 0.022 deg
+        self.assertAngle(self.q("TiltMntToTilt"), predicted_tilt("tilt"), tol=0.001 * DEG,
+                         what="tilt with a short tilt quaternion, predicted from tilt-link e1 alone")
 
 
 # ========================================================================================
@@ -324,13 +369,18 @@ class TestJointAnglesFromImus(ImuCase):
 
     def test_nominal_inputs_publish_the_documented_rest_pose(self):
         # WHY: every other area's scenario starts from Harness.nominal_inputs(); its IMUs must be
-        # the physical rest pose it documents (Harness.NOMINAL_POSE, level house, tilt 0), not
-        # the identity quaternions it used to write. Seeded LPF (MdlApp.c:11302): one tick is exact.
+        # the physical rest pose the harness documents ("level house, boom -40, arm 90, input
+        # link -60, tilt 0 deg", harness.py module docstring), not the identity quaternions it
+        # used to write. The firmware readings are compared with those LITERAL degrees, so a
+        # change to Harness.NOMINAL_POSE that the docs do not follow fails here too.
+        # Seeded LPF (MdlApp.c:11302): one tick is exact.
+        documented_deg = {"q_bm1": -40.0, "q_arm": 90.0, "q_inp": -60.0, "q_tilt": 0.0}
+        self.assertEqual({k: round(math.degrees(v), 9) for k, v in Harness.NOMINAL_POSE.items()}, documented_deg)
         self.h.tick()
         for j, key in zip(Y_JOINTS, ("q_bm1", "q_arm", "q_inp")):
-            self.assertAngle(self.q(j), Harness.NOMINAL_POSE[key], what=j)
+            self.assertAngle(self.q(j), documented_deg[key] * DEG, what=j)
             self.assertEqual(self.qdot(j), 0.0, j)
-        self.assertAngle(self.q("TiltMntToTilt"), Harness.NOMINAL_POSE["q_tilt"], tol=0.005 * DEG, what="tilt")
+        self.assertAngle(self.q("TiltMntToTilt"), documented_deg["q_tilt"] * DEG, tol=0.005 * DEG, what="tilt")
         self.assertEqual(self.q("Bm1ToBm2"), 0.0)
         roll, pitch, _ = self.fw["y.chs.euAng"]
         self.assertAngle(roll, 0.0, what="chassis roll")
@@ -389,22 +439,22 @@ class TestJointAnglesFromImus(ImuCase):
                     if all(np.abs(kin.rpy_to_R(*mounts[u][1]) - mset[kin.PORT_MOUNT[p]].T).max() < 1e-6
                            for u, p in URDF_IMU_PORT.items())]
 
-        self.assertEqual(matched_sets(urdf_imu_mounts("ECR88_US1_2P1M")), ["ECR88D_LongArm.m"])
-        self.assertEqual(matched_sets(urdf_imu_mounts("ECR88_US1_2P1M_NEWSUCTION")), ["ECR88D_LongArm.m"])
-        self.assertEqual(matched_sets(urdf_imu_mounts("ECR88_KIJANG")), ["ECR88D_ShortArm.m"])
+        expect_parent = {"imu_chs": "house_link", "imu_boom": "boom_link", "imu_arm": "arm_link",
+                         "imu_link": "input_link", "imu_tilt": "tilt_link"}
+        for variant, unit in (("ECR88_US1_2P1M", "ECR88D_LongArm.m"),
+                              ("ECR88_US1_2P1M_NEWSUCTION", "ECR88D_LongArm.m"),
+                              ("ECR88_KIJANG", "ECR88D_ShortArm.m")):
+            with self.subTest(machine_variant=variant):
+                self.assertEqual(matched_sets(urdf_imu_mounts(variant)), [unit])
+                self.assertEqual({k: v[0] for k, v in urdf_imu_mounts(variant).items()}, expect_parent)
         self.assertEqual(kin.identify_mount_source(fw, data), "ECR88D_ShortArm.m",
                          "compiled par.imu* source changed")
 
         # The 1.7 m asset against this binary, compiled mounts untouched.
         mounts = urdf_imu_mounts("ECR88_KIJANG")
-        expect_parent = {"imu_chs": "house_link", "imu_boom": "boom_link", "imu_arm": "arm_link",
-                         "imu_link": "input_link", "imu_tilt": "tilt_link"}
-        self.assertEqual({k: v[0] for k, v in mounts.items()}, expect_parent)
-
-        matched = ["ECR88D_ShortArm.m"]
         for u, p in URDF_IMU_PORT.items():     # and not the old untransposed rpy(M) either
             self.assertGreater(np.abs(kin.rpy_to_R(*mounts[u][1])
-                                      - param_sets[matched[0]][kin.PORT_MOUNT[p]]).max(), 0.5)
+                                      - param_sets["ECR88D_ShortArm.m"][kin.PORT_MOUNT[p]]).max(), 0.5)
 
         qb, qa, qi, qt = -50 * DEG, 110 * DEG, -60 * DEG, 8 * DEG
         link = kin.link_frames(fw, kin.rpy_to_R(3 * DEG, -4 * DEG, 2.0), qb, qa, qi, qt)
@@ -412,7 +462,7 @@ class TestJointAnglesFromImus(ImuCase):
             self.publish_raw(URDF_IMU_PORT[name], link[URDF_IMU_PORT[name]] @ kin.rpy_to_R(*rpy))
         self.settle()
         for j, want in zip(Y_JOINTS + ("TiltMntToTilt",), (qb, qa, qi, qt)):
-            self.assertAngle(self.q(j), want, what=f"{j} [{matched[0]} mounts]")
+            self.assertAngle(self.q(j), want, what=f"{j} [ECR88_KIJANG frames, compiled ShortArm mounts]")
         inhibit = self.h.inhibit_status()
 
         # Negative control for B2.2: the same board bolted to the OUTPUT link. The firmware takes
@@ -425,17 +475,22 @@ class TestJointAnglesFromImus(ImuCase):
         self.assertEqual(self.h.inhibit_status(), inhibit)
 
     def test_foreign_mount_set_is_predictable_and_costs_degrees(self):
-        # WHY: what running the 2.1 m asset (LongArm IMU frames) against this ShortArm binary
-        # WITHOUT load_imu_mounts does. The firmware sees linkOri = R_link @ M_urdf' @ M_compiled
-        # (MdlApp.c:10940); firmware_readout() predicts every reported joint from that, and the
-        # firmware must match the prediction -- so the error is explained, not just "large".
+        # WHY: what running the 2.1 m asset (machine_variant ECR88_US1_2P1M, LongArm IMU frames)
+        # against this ShortArm binary WITHOUT load_imu_mounts does -- the deliberate cross-unit
+        # case. The firmware sees linkOri = R_link @ M_urdf' @ M_compiled (MdlApp.c:10940);
+        # firmware_readout() predicts every reported joint from that, and the firmware must match
+        # the prediction -- so the error is explained, not just "large".
         # Observed worst over the sweep: boom 0.17, arm 3.8, input link 4.7, output link 13.3
         # (four-bar gain near q_inp 0), tilt 15.8 deg (arm 100 deg, tilt axis near vertical).
         # No fault is raised. The Isaac IMU frames must come from the same parameter file as the
-        # firmware build under test.
+        # mounts the firmware runs with: positive control at the end, same frames after
+        # h.load_imu_mounts('ECR88D_LongArm.m').
         fw = self.fw
-        mounts = urdf_imu_mounts()
+        mounts = urdf_imu_mounts("ECR88_US1_2P1M")
         M = kin.mounts_from_fw(fw)
+        self.assertGreater(max(np.abs(kin.rpy_to_R(*mounts[u][1]) - M[kin.PORT_MOUNT[p]].T).max()
+                               for u, p in URDF_IMU_PORT.items()), 1e-3,
+                           "precondition: the US frames are not the compiled unit's")
         worst = dict.fromkeys(Y_JOINTS + ("ArmToOutpLink", "TiltMntToTilt"), 0.0)
         for pose in ((-69, 31, -120, 0), (-50, 90, -60, 12), (-31, 155, 0, -20), (-40, 100, -30, 30)):
             with self.subTest(pose_deg=pose):
@@ -460,6 +515,16 @@ class TestJointAnglesFromImus(ImuCase):
         self.assertGreater(worst["ArmToInpLink"], 4.0)
         self.assertGreater(worst["ArmToOutpLink"], 10.0)
         self.assertGreater(worst["TiltMntToTilt"], 10.0)
+
+        # Positive control: the same US frames with the matching unit's mounts loaded.
+        qb, qa, qi, qt = (a * DEG for a in (-40, 100, -30, 30))
+        self.h.reset().nominal_inputs().load_imu_mounts("ECR88D_LongArm.m")
+        link = kin.link_frames(fw, kin.rpy_to_R(3 * DEG, -4 * DEG, 2.0), qb, qa, qi, qt)
+        for name, (_, rpy) in mounts.items():
+            self.publish_raw(URDF_IMU_PORT[name], link[URDF_IMU_PORT[name]] @ kin.rpy_to_R(*rpy))
+        self.settle()
+        for j, want in zip(Y_JOINTS + ("TiltMntToTilt",), (qb, qa, qi, qt)):
+            self.assertAngle(self.q(j), want, what=f"{j} [ECR88_US1_2P1M frames, LongArm mounts loaded]")
 
     def test_bm2_zero_quaternion_and_garbage_are_harmless(self):
         # WHY: the real ECU sends zeros on the bm2 slot (PrePostProc_If.c:824-833); an all-zero
@@ -613,12 +678,12 @@ class TestFourBar(ImuCase):
                 prev = got
 
     def test_firmware_reports_the_ground_link_angle_when_the_loop_cannot_close(self):
-        # WHY: pins what the firmware outputs for an impossible four-bar, because the library
-        # documents it wrongly: kin.fourbar_output says "Returns None where the firmware would
-        # output 0". CalcAngLinkOutp does set angOutpLink = 0 when det < 0 (MdlApp.c:11177-11182),
-        # but KinematicsCalc then ADDS angArmToGndLink (MdlApp.c:11789-11791), so y.jnts.
-        # ArmToOutpLink reads 4.1 deg with no fault. None (and link_frames raising) is the right
-        # library behaviour; only the docstring is wrong.
+        # WHY: pins what the firmware outputs for an impossible four-bar, which is easy to get
+        # wrong (the kin.fourbar_output docstring once said "the firmware would output 0"; it now
+        # states the behaviour pinned here). CalcAngLinkOutp does set angOutpLink = 0 when det < 0
+        # (MdlApp.c:11177-11182), but KinematicsCalc then ADDS angArmToGndLink
+        # (MdlApp.c:11789-11791), so y.jnts.ArmToOutpLink reads 4.1 deg with no fault. None (and
+        # link_frames raising) is the right library behaviour for a plant.
         fw = self.fw
         # PRECONDITION: with the compiled lengths the loop closes at every input angle (Grashof
         # double crank: the ground link is shortest), so this branch needs a bad parameter set.
@@ -642,14 +707,27 @@ class TestFourBar(ImuCase):
         # (MdlApp.c:11186) is 0/0 on the firmware's own branch where kC = kB, i.e. input link
         # q = -107.087 deg for these lengths -- inside the URDF input_link_joint range
         # (-126..+43 deg). The true output is continuous there, but float32 cancellation in both
-        # arguments makes y.jnts.ArmToOutpLink wrong by >1 deg within +-0.0002 deg of input angle
-        # (observed 2.8 .. 92.8 deg there, >0.1 deg over +-0.005 deg) with no guard or flag, and
-        # the LPF passes it through when the machine dwells there. The tool pose jumps with it:
-        # links.contactSurface.p moves 2.1 m at the centre. A conditioned form (e.g. atan2 of the two
-        # circle-intersection coordinates) would not have this.
+        # arguments makes y.jnts.ArmToOutpLink wrong by >1 deg at every sampled input within
+        # +-0.0002 deg (observed 2.8 .. 92.8 deg), with no guard or flag, and the LPF passes it
+        # through when the machine dwells there. Further out the error is float32 rounding
+        # scatter, not a clean band. A 120-sample firmware scan per shell gave maxima of 4.8 deg at
+        # 0.0002-0.001, 1.5 at 0.001-0.003, 0.57 at 0.003-0.005, 0.38 at 0.005-0.01, 0.19 at
+        # 0.01-0.03, 0.07 at 0.03-0.1 and 0.0015 deg at 1-3 deg from the singular angle. The
+        # ">0.1 deg" part is pinned below on the 0.003-0.01 deg shell. The tool pose jumps with
+        # it: links.contactSurface.p moves 2.1 m at the centre. A conditioned form (e.g. atan2 of
+        # the two circle-intersection coordinates) would not have this.
         fw = self.fw
         q_sing = fourbar_singular_q_inp(fw)
         self.assertAlmostEqual(math.degrees(q_sing), -107.087, delta=0.001, msg="precondition")
+        # PRECONDITIONS (pure Python, the fourbar_singular_q_inp docstring): kC = kB, kA > 0, so the
+        # numerator -kA + sqrt(det) vanishes too; the other kC = kB root is not singular.
+        kA, kB, kC, det = fourbar_terms(fw, q_sing)
+        self.assertLess(abs(kC - kB), 1e-12, "precondition")
+        self.assertGreater(kA, 0.1, "precondition: kA > 0 at the singular root")   # 0.2585
+        self.assertLess(abs(-kA + math.sqrt(det)), 1e-12, "precondition")
+        kA2, kB2, kC2, det2 = fourbar_terms(fw, fourbar_singular_q_inp(fw, root=+1))
+        self.assertLess(abs(kC2 - kB2), 1e-12, "precondition")
+        self.assertGreater(-kA2 + math.sqrt(det2), 0.1, "precondition: other root not singular")
 
         def err_at(dq_deg):
             got, q_in_read = self.read_outp(q_sing + dq_deg * DEG)
@@ -661,6 +739,8 @@ class TestFourBar(ImuCase):
         self.assertLess(math.degrees(max(refs) - min(refs)), 0.01, "precondition: true output is continuous")
         self.assertGreater(min(e for e, _, _ in near), 1.0)
         self.assertGreater(max(e for e, _, _ in near), 45.0)
+        shell = [err_at(s * dq)[0] for dq in np.linspace(0.003, 0.01, 15) for s in (-1.0, 1.0)]
+        self.assertGreater(max(shell), 0.1)                   # observed 0.35 deg
         far = [err_at(dq)[0] for dq in (-3.0, -2.0, 2.0, 3.0)]
         self.assertLess(max(far), 0.002)
 
@@ -689,15 +769,22 @@ class TestTilt(ImuCase):
 
     def test_tilt_error_is_amplified_when_the_tilt_axis_nears_vertical(self):
         # WHY: SIL comparators must not treat tilt as uniformly accurate. The firmware removes a
-        # world-Z "drift" estimated from the horizontal projections of the tilt-mount X columns,
-        # dividing by R1(1,1)^2 + R1(2,1)^2 = cos^2(elevation of the tilt axis) with no guard
-        # (MdlApp.c:12321-12323). So near a vertical tilt axis a small attitude error is turned
-        # into tilt error ~ 1/cos. That is an observability limit (rotation about a vertical
-        # axis looks like heading drift); the firmware's part is only the missing guard/flag.
-        # On a level chassis a pitch error stays in the vertical plane and cancels; with roll it
-        # does not. The injected error is a 0.1 deg rotation about the tilt-mount Y axis applied
-        # to the published tilt-LINK attitude (equivalent to a board/mount error of that rotation).
-        bad = kin.Ry(0.1 * DEG)
+        # world-Z "drift" = the angle between the horizontal projections of the tilt-mount (R1)
+        # and tilt-link (R2) X columns, i.e. of the tilt axis (MdlApp.c:12321-12323), then takes
+        # tilt from R1' Rz(drift)' R2 (:12328, :12376). Mechanism: an attitude error of delta with
+        # a component `perp` out of the vertical plane through the tilt axis swings the axis'
+        # horizontal projection, of length cos(elevation), by delta*perp/cos(elev) in azimuth; all
+        # of that is removed as drift, and a world-Z rotation projects sin(elev) of itself onto
+        # the tilt axis. Tilt error ~ delta * perp * tan(elev), asserted below. It is an
+        # observability limit (rotation about a vertical axis looks like heading drift), not a
+        # numerical one: the source's division by R1(1,1)^2 + R1(2,1)^2 scales both atan2
+        # arguments and cancels, so its missing guard would matter only at exactly 0 (0/0).
+        # What the firmware lacks is a flag. On a level chassis the injected error stays in the
+        # vertical plane (perp = 0) and cancels; with roll it does not. The injected error is a
+        # 0.1 deg rotation about the tilt-mount Y axis applied to the published tilt-LINK attitude
+        # (equivalent to a board/mount error of that rotation).
+        delta_deg = 0.1
+        bad = kin.Ry(delta_deg * DEG)
 
         def tilt_error(rpy, q_arm, with_error=True):
             self.h.reset().nominal_inputs()
@@ -707,19 +794,30 @@ class TestTilt(ImuCase):
             kin.publish_imus(self.fw, frames)
             self.settle()
             err = abs(math.degrees(self.q("TiltMntToTilt")) - 12.0)
-            return err, math.degrees(math.asin(abs(R_mnt[2, 0]))), discrete_outputs(self.fw)
+            axis, moved = R_mnt[:, 0], R_mnt[:, 2]               # Ry(delta) moves X toward -Z
+            elev = math.asin(abs(axis[2]))
+            n = np.cross(UP, axis)
+            perp = abs(moved @ n) / np.linalg.norm(n)
+            law = delta_deg * perp * math.tan(elev)
+            return err, math.degrees(elev), law, discrete_outputs(self.fw)
 
-        err_flat_tool, elev_lo, flags_lo = tilt_error((8 * DEG, 6 * DEG, 40 * DEG), 40 * DEG)
-        err_vert_tool, elev_hi, flags_hi = tilt_error((8 * DEG, 6 * DEG, 40 * DEG), 100 * DEG)
-        err_clean, _, flags_clean = tilt_error((8 * DEG, 6 * DEG, 40 * DEG), 100 * DEG, with_error=False)
-        err_level, _, _ = tilt_error((0, 0, 40 * DEG), 100 * DEG)
-        self.assertLess(elev_lo, 35.0)
-        self.assertGreater(elev_hi, 75.0)
+        err_flat_tool, elev_lo, law_lo, flags_lo = tilt_error((8 * DEG, 6 * DEG, 40 * DEG), 40 * DEG)
+        err_vert_tool, elev_hi, law_hi, flags_hi = tilt_error((8 * DEG, 6 * DEG, 40 * DEG), 100 * DEG)
+        err_clean, _, _, flags_clean = tilt_error((8 * DEG, 6 * DEG, 40 * DEG), 100 * DEG, with_error=False)
+        err_level, _, law_level, _ = tilt_error((0, 0, 40 * DEG), 100 * DEG)
+        self.assertLess(elev_lo, 35.0)             # observed 27.9 deg
+        self.assertGreater(elev_hi, 75.0)          # observed 81.9 deg
         self.assertLess(err_clean, 0.001)          # the pose itself is fine without the error
         self.assertLess(err_flat_tool, 0.02)       # observed 0.008 deg
         self.assertGreater(err_vert_tool, 0.5)     # observed 0.68 deg: ~7x the injected error
         self.assertLess(err_level, 0.002)
+        # The tan law explains each case (observed 0.0083/0.0083, 0.6833/0.6816, 0/0 deg).
+        self.assertAlmostEqual(err_flat_tool, law_lo, delta=0.0005)
+        self.assertAlmostEqual(err_vert_tool, law_hi, delta=0.01 * law_hi)
+        self.assertLess(law_level, 1e-6, "precondition: level chassis keeps the error in plane")
         # No flag, enum or status output distinguishes the ill-conditioned case (idle machine).
+        # The snapshot must not be empty, or the equalities below would hold vacuously.
+        self.assertGreater(len(flags_hi), 30)      # 42 today
         self.assertEqual(flags_hi, flags_clean)
         self.assertEqual(flags_hi, flags_lo)
 

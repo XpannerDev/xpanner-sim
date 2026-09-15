@@ -132,6 +132,24 @@ def _press_and_sample(h, ticks):
     return samples
 
 
+def _paused_in_align_with_target_cleared(yaw_deg):
+    """Fresh harness: running Align toward panel 7 with the chassis yawed `yaw_deg` CCW from
+    grid East (sil/geodesy.py), paused, then id 0 written and latched (ack 0, BIT_NO_TARGET).
+    Ends with the switch low. Why this resumes into Picking at 0-3 deg: see
+    test_target_cleared_while_paused_resumes_into_picking_when_facing_grid_east."""
+    h = Harness().reset()
+    R = kin.Rz(math.radians(yaw_deg))
+    h.gnss_site()
+    h.place_chassis((0.0, 0.0, 0.0), R)
+    _to_running_positioning(h, panel_id=7, R_chs=R)
+    h.run_until(lambda h: h.positioning_step() == "PositioningStep_Align", 0.5, "Align")
+    h.tick(40)                                  # tilt reached-confirm long satisfied
+    h.pulse("u.jstAutoReq_StartPause")
+    h.fw["u.tarPanelData.id"] = 0
+    h.tick(100)
+    return h
+
+
 def _running(h):
     return h.main_state() == "Positioning" and h.is_running()
 
@@ -286,12 +304,15 @@ class TestStopAndCancel(unittest.TestCase):
         self.assertEqual(h.valves(), {})
 
     def test_cancel_from_standby_relatches_the_input_and_allows_immediate_reentry(self):
-        # WHY: Cancel is the tablet's End button; the sim must see NoTarget. Cancel does not
-        # clear anything: the latch runs after the chart in the same step and NoTarget is in
-        # its enable set, so on the Cancel tick itself ack jumps to whatever id is on the
-        # input (here 8, written while Standby ignored it). Standby can then be re-entered
-        # without the tablet re-sending an id. T188 in MdlApp_Standby MdlApp.c:25152; latch
-        # enable MdlApp.c:40922-40927, ack MdlApp.c:40946-40957.
+        # WHY: Cancel is the tablet's End button; the sim must see NoTarget. What this test
+        # pins: the latch runs after the chart in the same step and NoTarget is in its enable
+        # set, so on the Cancel tick itself ack jumps to whatever id is on the input (here 8,
+        # written while Standby ignored it), and Standby can then be re-entered without the
+        # tablet re-sending an id. That Cancel itself clears no target rests on the SOURCE, not
+        # on this test: the latch (enable MdlApp.c:40922-40927, ack :40946-40957) reads only
+        # CurrStep, StartStopSts, the input id and its own held copy (Delay4), no Cancel term;
+        # and any clear would be overwritten by the NoTarget re-read in the same step, so no
+        # tick could show it. T188 in MdlApp_Standby MdlApp.c:25152.
         h = _to_standby(self.h, panel_id=7)
         h.fw["u.tarPanelData.id"] = 8
         h.tick(5)
@@ -407,11 +428,25 @@ class TestInhibitWhileRunning(unittest.TestCase):
 
 
 class TestEntryIgnoresInhibitForOneTick(unittest.TestCase):
-    """No transition INTO a running auto state checks isAutoCtrlInhibited: the inhibit is
-    only seen by the running state's own guard (T180) one tick later, and the arbitration
-    passes the auto command for that tick (MdlApp.c:51737). A valve model with no pilot lag
-    twitches while the machine reports an inhibit. Spec A6 step 0 describes the T239->T205->T180
-    path into PositioningInhibited but not this actuation."""
+    """Three entries into running Positioning fire without checking isAutoCtrlInhibited:
+    Standby T281 (MdlApp_Standby takes no inhibit input), Complete T256->T261
+    (MdlApp.c:40102-40114) and PositioningPaused T181, which is evaluated BEFORE its T180
+    (MdlApp.c:24157 vs :24176). The inhibit is then seen only by Positioning's own guard T180 one
+    tick later, and the arbitration passes the auto command for that tick (MdlApp.c:51737). A
+    valve model with no pilot lag twitches while the machine reports an inhibit. Spec A6 step 0
+    describes the T239->T205->T180 path into PositioningInhibited but not this actuation.
+
+    NOT A GENERAL RULE of the chart. Other resumes test the inhibit first: PickingPaused T234
+    (isAutoCtrlInhibited || isPanelAttached, MdlApp.c:23242) before T191 (:23257), PlacingPaused
+    T203 (:23697) before T184 (:23860), ReleasingPaused T204 (:24938) before T215 (:25104),
+    VacuumPaused T189 (:15281) before T202 (:15296). A transition between two running states sits
+    behind the running state's own guard: T474 Positioning -> Picking comes after T180
+    (MdlApp.c:23921 vs :23937). The last two tests pin PickingPaused and T474 as controls.
+    ReadyToPlace T245 (:24499, the function takes no inhibit input) has the unguarded order too
+    and IS reachable with inputs alone (verifier: jump_to_step('EngagingVacuum', start=False),
+    all four cups + vacPrs -0.6, StartPause -> ReadyToPlace next tick; an IMU fault on the next
+    StartPause edge gives one running Placing tick with valves, then PlacingInhibited). Not
+    pinned by a test yet. ReadyToRelease T295 (:24688, before T493 :24708) is source-only here."""
 
     def setUp(self):
         self.h = Harness().reset()
@@ -465,6 +500,49 @@ class TestEntryIgnoresInhibitForOneTick(unittest.TestCase):
         valves, step = self._assert_one_tick_run(h)
         self.assertEqual(step, "PositioningStep_Raise")
         self.assertTrue(_axes(valves) <= CTRL_AXES_IN_POSITIONING["PositioningStep_Raise"], valves)
+
+    def test_control_picking_paused_checks_the_inhibit_before_resume(self):
+        # WHY (scope): the same-tick fault that PositioningPaused lets through for one tick must
+        # not be assumed for every <X>Paused. MdlApp_PickingPaused evaluates T234 (MdlApp.c:23242)
+        # BEFORE T191 (:23257), so the edge lands in PickingInhibited with no run on any tick.
+        # PickingPaused is reached without a plant by the tablet jump (Standby T177, MdlApp.c:25195).
+        h = _to_standby(self.h)
+        h.jump_to_step("Picking", start=False)
+        h.tick(3)
+        self.assertEqual(h.main_state(), "PickingPaused")
+        h.fw["u.isChsImuFault"] = 1                 # same tick as the edge
+        for n, (state, running, valves, _) in enumerate(_press_and_sample(h, 3)):
+            self.assertEqual((state, running, valves), ("PickingInhibited", False, {}), f"edge+{n}")
+        # Same press with the fault cleared: Picking runs with a front-end command on the edge
+        # tick, so the empty valves above are the inhibit, not an idle Picking.
+        h.fw["u.isChsImuFault"] = 0
+        h.tick(5)
+        self.assertEqual(h.main_state(), "PickingPaused")
+        (state, running, valves, _), = _press_and_sample(h, 1)
+        self.assertEqual((state, running), ("Picking", True))
+        self.assertTrue(_axes(valves) & {"bm1", "arm", "link"}, valves)
+
+    def test_control_positioning_to_picking_checks_the_inhibit_first(self):
+        # WHY (scope): a transition between two RUNNING states is not an unguarded entry.
+        # MdlApp_Positioning evaluates T180 (MdlApp.c:23921) before T474 (:23937), and T474's own
+        # inputs are unit delays (Delay7 = isTarActuatorReached, MdlApp.c:52211-52221; Delay26 =
+        # isUcPathAligned, :52248), so a fault written for the tick on which T474 fires cannot
+        # change T474's guard -- only the order decides. Uses the no-target Picking entry facing
+        # grid East (TestTargetLatch): resume on the edge tick, T474 on the next.
+        for fault in (False, True):
+            with self.subTest(fault_on_the_t474_tick=fault):
+                h = _paused_in_align_with_target_cleared(0.0)
+                (state, running, _, _), = _press_and_sample(h, 1)
+                self.assertEqual((state, running), ("Positioning", True))
+                h.fw["u.isChsImuFault"] = int(fault)
+                for n in range(3):
+                    h.tick()
+                    if fault:
+                        self.assertEqual((h.main_state(), h.is_running(), h.valves()),
+                                         ("PositioningInhibited", False, {}), f"edge+{n + 1}")
+                    else:
+                        self.assertEqual((h.main_state(), h.is_running()), ("Picking", True), f"edge+{n + 1}")
+                        self.assertTrue(_axes(h.valves()) & {"bm1", "arm", "link"}, h.valves())
 
 
 class TestTargetLatch(unittest.TestCase):
@@ -621,16 +699,7 @@ class TestTargetLatch(unittest.TestCase):
         }
         for label, (yaw_deg, expected, travel_ports) in cases.items():
             with self.subTest(label):
-                h = Harness().reset()
-                R = kin.Rz(math.radians(yaw_deg))     # yaw CCW from grid East (sil/geodesy.py)
-                h.gnss_site()
-                h.place_chassis((0.0, 0.0, 0.0), R)
-                _to_running_positioning(h, panel_id=7, R_chs=R)
-                h.run_until(lambda h: h.positioning_step() == "PositioningStep_Align", 0.5, "Align")
-                h.tick(40)                              # tilt reached-confirm long satisfied
-                h.pulse("u.jstAutoReq_StartPause")
-                h.fw["u.tarPanelData.id"] = 0
-                h.tick(100)
+                h = _paused_in_align_with_target_cleared(yaw_deg)
                 self.assertEqual(h.fw["y.tarPanelIdAck"], 0)
                 self.assertIn("BIT_NO_TARGET", h.inhibit_names())
                 self.assertFalse(h.auto_inhibited())
@@ -809,15 +878,33 @@ class TestPositioningWithoutPlant(unittest.TestCase):
 
     def test_raise_tick_commands_only_the_front_end(self):
         # WHY: the one-tick Raise command is the only front-end actuation before Picking when
-        # the house starts square; a valve model with no lag turns it into a 10 ms twitch.
-        # chart_2123 Raise: bm1/arm/link TaskSpace, Swing: swing/tilt/rotate JntSpace (tilt
-        # already at 0 here, so nothing); Raise -> Swing next tick (T1004, MdlApp.c:40847).
-        h = _to_standby(self.h)
-        (_, _, raise_ports, step0), (_, _, swing_ports, step1) = _press_and_sample(h, 2)
-        self.assertEqual(step0, "PositioningStep_Raise")
-        self.assertEqual(_axes(raise_ports), {"bm1", "arm", "link"}, raise_ports)
-        self.assertEqual(step1, "PositioningStep_Swing")
-        self.assertEqual(swing_ports, {}, "tilt at its target and swing at 0: Swing commands nothing")
+        # the house starts square; a valve model with no lag turns it into a 10 ms twitch, and
+        # its DIRECTION is what that twitch does to the boom, arm and link.
+        # chart_2123 Raise: bm1/arm/link TaskSpace ('<S142>:1:22-25'), Swing: swing/tilt/rotate
+        # JntSpace (tilt already at 0 here, so nothing); Raise -> Swing next tick (T1004,
+        # MdlApp.c:40847). TaskSpace target p_tar = objects.swingToPick.p = links.chs.p +
+        # R_chs * distChsToRaisePosn ('<S141>:1:90-92', '<S171>:1:230' MdlApp.c:13020) with the
+        # current contact-surface R, so the port directions depend on where the pose puts the
+        # tool. Pinned at the pose nominal_inputs() publishes (Harness.NOMINAL_POSE: boom -40,
+        # arm 90, input link -60 deg), so a change of that pose which flips a direction fails
+        # here: bm1Up, armOut, linkIn. The second pose is the control that the pin can fail:
+        # the same firmware commands the arm IN there, so the direction is not a constant.
+        cases = (
+            (None, {"bm1Up", "armOut", "linkIn"}),                 # nominal_inputs() as published
+            ((-20.0, 60.0, -30.0), {"bm1Up", "armIn", "linkIn"}),
+        )
+        for pose_deg, expected_ports in cases:
+            with self.subTest(pose_deg=pose_deg or "NOMINAL_POSE"):
+                h = _to_standby(Harness().reset())
+                if pose_deg is not None:
+                    bm1, arm, inp = (math.radians(a) for a in pose_deg)
+                    h.set_pose(q_bm1=bm1, q_arm=arm, q_inp=inp, q_tilt=0.0)
+                    h.tick(2)
+                (_, _, raise_ports, step0), (_, _, swing_ports, step1) = _press_and_sample(h, 2)
+                self.assertEqual(step0, "PositioningStep_Raise")
+                self.assertEqual(set(raise_ports), expected_ports, raise_ports)
+                self.assertEqual(step1, "PositioningStep_Swing")
+                self.assertEqual(swing_ports, {}, "tilt at its target and swing at 0: Swing commands nothing")
 
     def test_travel_output_waits_80_ticks_after_the_travel_direction_flips(self):
         # WHY: a timing budget for every UC-alignment scenario and for the travel valve model.

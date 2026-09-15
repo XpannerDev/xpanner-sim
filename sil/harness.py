@@ -234,9 +234,12 @@ class Harness:
         return self
 
     def jump_to_step(self, step, start=True):
-        """The tablet step jump: from Standby or any <X>Paused / <X>Inhibited, changing
-        autoReqStep lands in <X>Paused without that step's entry guard (chart_2537); a
-        StartPause edge then runs it. From a RUNNING state it does nothing at all -- no write,
+        """The tablet step jump. For CYCLE steps (Positioning .. Releasing): from Standby or any
+        <X>Paused / <X>Inhibited, changing autoReqStep lands in <X>Paused without that step's
+        entry guard (chart_2537); a StartPause edge then runs it. CALIBRATION steps (20-29) are
+        accepted ONLY from NoTarget: from Standby the request is dropped and the StartPause edge
+        starts the PANEL CYCLE instead (test_calib_request_in_standby_then_auto_press_starts_the_
+        panel_cycle). From a RUNNING state it does nothing at all -- no write,
         no tick: the firmware ignores the step change there, and the StartPause edge would
         PAUSE the run (MdlApp.c:18960) instead of starting anything. Pause first."""
         # A running calibration reports isCalibrating, not autoCtrl_StartStopSts.

@@ -349,7 +349,11 @@ class TestHeading(GnssTestBase):
         # (chart_2143 line 49); machHeading = -yaw + pi/2, wrapped MdlApp.c:13423-13445 (line 341).
         self.site(38.0, 127.0, 50.0)
         main = [-480.0, 350.0, 0.0]
-        tol = 4 * f32_tol(*main) / self.L
+        # enh_LocalMain/Aux are each rounded to float32 once (<= ULP/2 per component, :15203), so
+        # each baseline component is off by <= 1 ULP and its direction by <= sqrt(2)*ULP/L; a
+        # difference of two headings by twice that. f32_tol (4 ULP) / L bounds both: 1.05e-4 rad
+        # here, against a measured worst case of 1.6e-5 rad over a 1-deg sweep of yaw.
+        tol = f32_tol(*main) / self.L
         seen = {}
         for yaw_deg in (-170, -120, -90, -30, 0, 30, 45, 90, 135, 179.5):
             with self.subTest(yaw_deg=yaw_deg):
@@ -490,9 +494,12 @@ class TestGnssSwingAngle(GnssTestBase):
                                               written at :52313 after ValidateSwingAngCalc)
           raw      += dyaw while valid       (else RefHold/SwingHold re-latch, :11947-11956)
           y        += alpha*(raw - y)        (LPF1st_JntAngs, fc 3 Hz, :12425)
-          q         = -y                     (jntAng_ChsToUc = -jntAng_UcToChs, line 201; :13134)
-          operated  = prs > 5 ? 1 : prs < 3 ? 0 : hold   (literals 5.0F/3.0F at MdlApp.c:51911-51929
-                                              = RngPiPrsOperOn/Off, SysPar.m:47-48; chart_1167 47-52)
+          q         = -y                     (jntAng_ChsToUc = -jntAng_UcToChs, chart_2143 line
+                                              201 at :12437; written as y.jnts.ChsToUc.q =
+                                              -jntAngFilt[8], line 265, at :13134)
+          operated  = prs > 5 ? 1 : prs < 3 ? 0 : hold   (strict '>' 5.0F at MdlApp.c:51912, strict
+                                              '<' 3.0F at :51918, hold :51928; = RngPiPrsOperOn/Off,
+                                              SysPar.m:47-48; chart_1167 lines 47-52)
         The other OR-term of 'operated', isSwingCmdOn = |propVlvCmd.swingLe/Ri| > 1e-6 (:51861), is
         false throughout: auto never starts in these tests, so every valve port stays 0."""
         for _ in range(ticks):
@@ -514,7 +521,8 @@ class TestGnssSwingAngle(GnssTestBase):
         # first order) and that the first tick of pressure is not yet "valid" -- or a closed-loop
         # swing will look like a firmware overshoot.
         # Firmware: swingAngRef = atan2(axis.(ref x curr), ref.curr) :11927-11938 (chart_2143
-        # line 78), positive for CCW about +Z; q = -jntAngFilt[8] :13134 (line 201); LPF :12425;
+        # line 78), positive for CCW about +Z; jntAng_ChsToUc = -jntAng_UcToChs :12437 (line 201),
+        # output y.jnts.ChsToUc.q = -jntAngFilt[8] :13134 (line 265); LPF :12425;
         # Delay16 :42043 / :52313.
         self.swing(prs=10.0, dyaw=0.01, ticks=20)     # pressure and motion start together
         self.assertAlmostEqual(self.raw, 0.19, delta=1e-9)   # first increment fell in the delay
@@ -549,22 +557,33 @@ class TestGnssSwingAngle(GnssTestBase):
         # WHY: a pilot-pressure noise model must respect the hysteresis; a pressure that decays
         # below 3 bar while the house still coasts leaves a permanent swing-angle offset (the
         # angle resumes INCREMENTALLY, it never re-reads the absolute baseline).
-        # Firmware: operated on > RngPiPrsOperOn 5, off < RngPiPrsOperOff 3, else hold
-        # (MdlApp.c:51910-51928, chart_1167 lines 47-52); frozen raw via RefHold/SwingHold
+        # Firmware: operated on swingLe > 5.0F (RngPiPrsOperOn), off < 3.0F (RngPiPrsOperOff), else
+        # hold (MdlApp.c:51910-51928, chart_1167 lines 47-52); frozen raw via RefHold/SwingHold
         # re-latch :11947-11956; raw = wrap(wrap(ref - RefHold) + SwingHold) :11994-12037 (line 107).
-        self.swing(prs=10.0, dyaw=0.0, ticks=2)
-        self.swing(prs=10.0, dyaw=0.01, ticks=20)
-        self.swing(prs=4.0, dyaw=0.01, ticks=10)      # band: still operated
-        self.swing(prs=4.0, dyaw=0.0, ticks=100)
-        self.assertAlmostEqual(self.q(), -0.30, delta=1e-5)
-        self.swing(prs=2.0, dyaw=0.01, ticks=10)      # off: only the delayed first tick counts
-        self.swing(prs=4.0, dyaw=0.01, ticks=10)      # band after off: still not operated
-        self.swing(prs=4.0, dyaw=0.0, ticks=100)
-        self.assertAlmostEqual(self.q(), -0.31, delta=1e-5)
+        # BOTH comparisons are strict, and each is pinned on both sides of its literal: 5.0 is not
+        # on, 5.01 is; 3.0 still holds (on AND off), 2.99 is off. swing() checks every tick, so a
+        # model or firmware on-threshold anywhere outside (5.0, 5.01] or off-threshold outside
+        # (2.99, 3.0] diverges here. The inport is real32 (slprj/ert/_sharedutils/PiPrs_t.h:25) and
+        # 5.0/3.0 are exact in float32, so the strictness is the firmware's, not a rounding artefact.
+        self.swing(prs=5.0, dyaw=0.01, ticks=10)      # exactly 5 bar from off: not operated
+        self.swing(prs=5.0, dyaw=0.0, ticks=50)
+        self.assertEqual(self.q(), 0.0, "house turned 0.1 rad at exactly 5 bar: frozen")
+        self.swing(prs=5.01, dyaw=0.0, ticks=2)       # just above 5: operated (valid one tick later)
+        self.swing(prs=5.01, dyaw=0.01, ticks=20)
+        self.swing(prs=4.0, dyaw=0.01, ticks=10)      # mid band: still operated
+        self.swing(prs=3.0, dyaw=0.01, ticks=10)      # exactly 3 bar: not off, still operated
+        self.swing(prs=3.0, dyaw=0.0, ticks=100)
+        self.assertAlmostEqual(self.q(), -0.40, delta=1e-5)
+        self.swing(prs=2.99, dyaw=0.01, ticks=10)     # just below 3: off, only the delayed first tick counts
+        self.swing(prs=3.0, dyaw=0.01, ticks=10)      # band after off holds OFF, at both edges
+        self.swing(prs=4.0, dyaw=0.01, ticks=10)
+        self.swing(prs=5.0, dyaw=0.01, ticks=10)
+        self.swing(prs=5.0, dyaw=0.0, ticks=100)
+        self.assertAlmostEqual(self.q(), -0.41, delta=1e-5)
         self.swing(prs=10.0, dyaw=-0.01, ticks=10)    # back: increments only (first one delayed)
         self.swing(prs=10.0, dyaw=0.0, ticks=100)
-        self.assertAlmostEqual(self.q(), -0.22, delta=1e-5)
-        self.assertAlmostEqual(self.yaw - self.YAW0, 0.40, delta=1e-9)   # truth: house at +0.40 rad
+        self.assertAlmostEqual(self.q(), -0.32, delta=1e-5)
+        self.assertAlmostEqual(self.yaw - self.YAW0, 0.80, delta=1e-9)   # truth: house at +0.80 rad
 
     def test_swing_with_travel_freezes_the_angle_and_drops_the_alignment_latch(self):
         # WHY: spec A6.0 "swinging and travelling together for 100 consecutive ticks invalidates
@@ -574,7 +593,9 @@ class TestGnssSwingAngle(GnssTestBase):
         # operated && ~trvlOperated (chart_1167 line 55, Delay16 :52313); counter on Delay18 &
         # Delay17 :11958-11984, CntSwingZeroInvalidChkDly 100 (SysPar.m:269, literal 100U at :11973),
         # == 100 -> hasSwingAlignedAfterKeyOn = false :11988-11991 (chart_2143 line 104); re-latched
-        # by the next isSwingAligned rising edge :12067-12143 (line 139).
+        # by the next isSwingAligned rising edge :12067-12143 (lines 113, 139), which reads the
+        # inport directly, so on the edge tick itself; the inhibit word reads it through Delay19
+        # (:39645, updated :52237), one tick later.
         self.fw["u.ehPiPrs.trvlLeFwd"] = 10.0
         self.fw["u.ehPiPrs.swingLe"] = 10.0
         for k in range(1, 103):
@@ -588,9 +609,16 @@ class TestGnssSwingAngle(GnssTestBase):
         self.fw["u.ehPiPrs.swingLe"] = 0.0
         self.h.tick(200)
         self.assertFalse(self.fw.internal("swing_init"), "stopping does not restore it")
-        self.h.pulse("u.isSwingAligned")
-        self.h.tick(2)
-        self.assertTrue(self.fw.internal("swing_init"), "a new alignment edge does")
+        self.assertTrue(self.h.inhibit_bit("SWING_NOT_INIT"), self.h.describe())
+        self.fw["u.isSwingAligned"] = 1
+        self.h.tick()
+        self.assertTrue(self.fw.internal("swing_init"), "a new alignment edge does, on the edge tick")
+        self.assertTrue(self.h.inhibit_bit("SWING_NOT_INIT"), "the inhibit word lags one tick")
+        self.h.tick()
+        self.assertEqual(self.h.inhibit_status(), 0, self.h.describe())
+        self.fw["u.isSwingAligned"] = 0
+        self.h.tick()
+        self.assertTrue(self.fw.internal("swing_init"), "the latch needs the edge, not the level")
 
 
 # ==========================================================================================

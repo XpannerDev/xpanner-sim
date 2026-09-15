@@ -6,14 +6,16 @@ sil/geodesy.py).
 The question every test here asks is "can the harness make a SIL result WRONG while it
 still LOOKS right?".
 
-  * Where the code is correct the test asserts the correct behaviour and passes. Ten of these
-    started life as expected failures in the first review round (boolean normalisation,
-    integer range checks, step-before-reset, request_step re-edge and latch, run_until
-    pre-check, run_seconds rounding, trace restart and precision). The core was fixed; they
-    are regression tests now, each with a "fixed: was ..." line.
+  * Where the code is correct the test asserts the correct behaviour and passes. Thirteen of
+    these started life as expected failures: ten in the first review round (boolean
+    normalisation, integer range checks, step-before-reset, request_step re-edge and latch,
+    run_until pre-check, run_seconds rounding, trace restart and precision) and three in the
+    second (float32 overflow, SSE rounding in the FP guard, jntAngRotZeroOffs in the save
+    snapshot; fixed in ce2b758). They are regression tests now, each with a "fixed: was ..." line.
   * Where the code is still wrong the test asserts the correct behaviour and is marked
     @unittest.expectedFailure with a LIBRARY BUG comment, so the suite passes today and
-    reports an "unexpected success" the day it is fixed (then drop the decorator).
+    reports an "unexpected success" the day it is fixed (then drop the decorator). None are
+    open at the moment.
 
 Tests that decide through a _probe_*() function: the probe RETURNS a bool and raises
 RuntimeError when its own precondition does not hold. TestProbeSanity calls every probe, so an
@@ -25,6 +27,7 @@ import ctypes
 import functools
 import glob
 import hashlib
+import itertools
 import json
 import math
 import re
@@ -334,12 +337,128 @@ def _stateflow_chart(file_number):
 
 def _glue_persisted_y_paths():
     """y.* leaves the ECU glue copies into INTP / kin_s / actuators0x_s while isCalibrating
-    (AppCtrlIf.c:801-1018): exactly what SaveInternalParam() + WriteToNVM() persist when
+    (AppCtrlIf.c:802-1018): exactly what SaveInternalParam() + WriteToNVM() persist when
     SaveMchCalibData() sees the request edge (main.c:405-406, InternalParam.c:72-86)."""
     text = _read_latin1(_x1exc() / "Asw" / "ModelInterface" / "AppCtrlIf.c")
     i = text.index("if (MdlApp_Y.isCalibrating)")
     body = text[i:text.index("// MdlApp_Y.calibStep", i)]
     return sorted({"y." + m.group(1) for m in re.finditer(r"MdlApp_Y\.([\w.]+)", body)} - {"y.isCalibrating"})
+
+
+_HAS_CHANGED = re.compile(r"\(\s*\*?\s*autoReq_Step_prev\s*\)\s*!=\s*MdlApp_DW\.autoReq_Step_start"
+                          r"|\bautoReq_Step_prev\s*!=\s*MdlApp_DW\.autoReq_Step_start")
+_REQ_EQ = re.compile(r"\(\(int32_T\)\s*MdlApp_U\s*\.\s*autoReqStep\s*\)\s*==\s*\(\(int32_T\)\s*(\w+)\s*\)")
+_INT_CAST = re.compile(r"\((?:boolean_T|u?int(?:8|16|32)_T)\)")
+_BOOL_OPS = ("&&", "||", "&", "|", "^", "!")
+
+
+def _match_paren(s, i):
+    depth = 0
+    for j in range(i, len(s)):
+        depth += (s[j] == "(") - (s[j] == ")")
+        if depth == 0:
+            return j
+    raise AssertionError(f"unbalanced parentheses from {s[i:i + 80]!r}")
+
+
+@functools.lru_cache(maxsize=None)
+def _flat_code():
+    """MdlApp.c without comments, whitespace collapsed."""
+    return re.sub(r"\s+", " ", re.sub(r"/\*.*?\*/", " ", _mdlapp_c(), flags=re.S))
+
+
+def _guard_tokens(s):
+    """Tokens of a guard in which the hasChanged term is 'H' and every autoReqStep equality 'E':
+    H, E, O (any other operand, constants included) and the boolean operators. An H or E inside
+    a non-boolean context (a comparison, a ternary) cannot be judged and raises."""
+    toks, chunk, i, depth = [], "", 0, 0
+
+    def flush(c):
+        c = c.strip()
+        if not c:
+            return
+        if c in ("H", "E"):
+            toks.append(c)
+        elif c[0] == "(" and _match_paren(c, 0) == len(c) - 1:
+            toks.extend(["("] + _guard_tokens(c[1:-1]) + [")"])
+        elif re.search(r"\b[HE]\b", c):
+            raise AssertionError(f"autoReqStep read in a non-boolean context: {c!r}")
+        else:
+            toks.append("O")
+
+    while i < len(s):
+        depth += (s[i] == "(") - (s[i] == ")")
+        op = next((o for o in _BOOL_OPS if s.startswith(o, i)), None) if depth == 0 else None
+        if op == "!" and s.startswith("!=", i):
+            op = None
+        if op:
+            flush(chunk)
+            chunk = ""
+            toks.append(op)
+            i += len(op)
+        else:
+            chunk += s[i]
+            i += 1
+    flush(chunk)
+    return toks
+
+
+def _guard_eval(toks, h, e_vals, o_vals):
+    """Evaluate the token list with C precedence (|| < && < | < ^ < & < unary !), 0/1 values."""
+    pos, e_it, o_it = [0], iter(e_vals), iter(o_vals)
+    levels = ("||", "&&", "|", "^", "&")
+    fn = {"||": lambda a, b: a or b, "&&": lambda a, b: a and b, "|": lambda a, b: a | b,
+          "^": lambda a, b: a ^ b, "&": lambda a, b: a & b}
+
+    def binary(k):
+        if k == len(levels):
+            return unary()
+        left = binary(k + 1)
+        while pos[0] < len(toks) and toks[pos[0]] == levels[k]:
+            pos[0] += 1
+            left = fn[levels[k]](left, binary(k + 1))
+        return left
+
+    def unary():
+        t = toks[pos[0]]
+        pos[0] += 1
+        if t == "!":
+            return 1 - unary()
+        if t == "(":
+            v = binary(0)
+            if toks[pos[0]] != ")":
+                raise AssertionError(f"unparsed guard {toks}")
+            pos[0] += 1
+            return v
+        if t in ("H", "E", "O"):
+            return h if t == "H" else next(e_it if t == "E" else o_it)
+        raise AssertionError(f"unexpected token {t!r} in {toks}")
+
+    v = binary(0)
+    if pos[0] != len(toks):
+        raise AssertionError(f"trailing tokens in {toks}")
+    return v
+
+
+def _re_edge_guard_violation(cond):
+    """None if `cond` behaves on the RE_EDGE_STEP tick exactly as on a tick with no request
+    change, else the reason. On that tick hasChanged is true and every `autoReqStep == <step>`
+    is false (255 is no AutoCtrlStep); on a quiet tick hasChanged is false and the equalities
+    are whatever the latched value makes them. Checked for EVERY assignment of the equalities
+    and of all other operands, so it needs no knowledge of what those operands are."""
+    s = _INT_CAST.sub("", _HAS_CHANGED.sub("H", _REQ_EQ.sub("E", cond)))
+    if "autoReq" in s:
+        return f"autoReqStep / its latch read outside the two recognised forms: {s}"
+    toks = _guard_tokens(s)
+    n_e, n_o = toks.count("E"), toks.count("O")
+    if not toks.count("H") or not n_e:
+        return f"guard without both hasChanged and an equality: {s}"
+    for o_vals in itertools.product((0, 1), repeat=n_o):
+        re_edge = _guard_eval(toks, 1, [0] * n_e, o_vals)
+        for e_vals in itertools.product((0, 1), repeat=n_e):
+            if _guard_eval(toks, 0, e_vals, o_vals) != re_edge:
+                return f"fires differently on the re-edge tick: {s}"
+    return None
 
 
 def _wrap(a):
@@ -778,7 +897,7 @@ class TestResetCompleteness(unittest.TestCase):
 
     def test_reset_after_eventful_run_zeroes_U_Y_and_restores_par_bitwise(self):
         # WHY: a scenario that patches par.* or leaves inputs set must not bias the next one.
-        # Citation: MdlApp.c:52638 memset U, :52641 memset Y; firmware.py:106-109 restores par.
+        # Citation: MdlApp.c:52638 memset U, :52641 memset Y; firmware.py:107-110 restores par.
         # Spec A2 ("initialize zeroes U; parLocalTest untouched") -- confirmed.
         fw = firmware()
         sizes = _state_sizes(fw)
@@ -796,7 +915,7 @@ class TestResetCompleteness(unittest.TestCase):
     def test_reset_state_is_bit_identical_to_a_fresh_process(self):
         # WHY: proves reset() is as good as restarting the ECU, so test order cannot matter.
         # Citation: MdlApp.c:52615-52649 (initialize: rt_InitInfAndNaN, memset B/DW/U/Y,
-        # MdlApp_Subsystem_Init); firmware.py:106-109.
+        # MdlApp_Subsystem_Init); firmware.py:107-110.
         fw = firmware()
         _eventful_scenario(Harness(plant=_plant).reset())
         mine = _reset_digests(fw)
@@ -836,7 +955,7 @@ class TestResetCompleteness(unittest.TestCase):
         # give y.euAng_ChsEstm_z = -2.356 rad and ~45 differing y leaves. Calling ONLY
         # rt_InitInfAndNaN removes every visible difference over those 3 steps; the non-zero
         # MdlApp_Subsystem_Init states (e.g. lowVerticalAccuracyState = true, :38340) exist but do
-        # not reach y that early. Guard: firmware.py:111-113.
+        # not reach y that early. Guard: firmware.py:113-114.
         self.assertTrue(_probe_stepping_without_reset_is_refused())
         raw = _run_child(_CHILD_NO_RESET % "raw")
         nan = _run_child(_CHILD_NO_RESET % "nan")
@@ -899,7 +1018,7 @@ class TestValueHandling(unittest.TestCase):
 
     def test_array_length_mismatch_and_unknown_path_are_loud(self):
         # WHY: a 3-vector written into a 4-quaternion must not silently leave w stale.
-        # Citation: firmware.py:155-156; MdlApp.h:987 real32_T chsImuQuat[4].
+        # Citation: firmware.py:156-157; MdlApp.h:987 real32_T chsImuQuat[4].
         with self.assertRaises(ValueError):
             self.fw["u.chsImuQuat"] = [1.0, 0.0, 0.0]
         with self.assertRaises(KeyError):
@@ -910,7 +1029,7 @@ class TestValueHandling(unittest.TestCase):
         # (u.autoStepRenderingAck itself has ZERO reads in the generated code -- the rendering
         # watchdog compares two delays of autoCtrl_CurrStep, MdlApp.c:39399-39407, :52226, :52234,
         # spec A8.6 -- so this is purely a harness write-path check.)
-        # Citation: MdlApp.h:1008 AutoCtrlStep autoStepRenderingAck; firmware.py:40-43.
+        # Citation: MdlApp.h:1008 AutoCtrlStep autoStepRenderingAck; firmware.py:41-44.
         for v in (self.fw.enum_value("AutoCtrlStep", "CalibSwingStopCoeff"), -1, -2 ** 31, 2 ** 31 - 1):
             self.fw["u.autoStepRenderingAck"] = v
             self.assertEqual(self.fw["u.autoStepRenderingAck"], v)
@@ -921,8 +1040,8 @@ class TestValueHandling(unittest.TestCase):
         # fixed: was stored raw (2) and read back True while the firmware saw FALSE: it ANDs
         # booleans and keeps them in 1-bit bitfields, MdlApp.c:12066-12070 `(!wasSwingAligned) &
         # U.isSwingAligned` (1 & 2 == 0) and :12153 into `uint_T wasSwingAligned:1` (MdlApp.h:600).
-        # Real glue writes only A_ON/A_OFF (PrePostProc_If.c:290). Now firmware.py:161-162, and a
-        # raw non-0/1 byte from outside the harness is refused on read (firmware.py:142-146).
+        # Real glue writes only A_ON/A_OFF (PrePostProc_If.c:290). Now firmware.py:162-163, and a
+        # raw non-0/1 byte from outside the harness is refused on read (firmware.py:143-147).
         self.assertTrue(_probe_bool_truthy_value_reaches_firmware_as_true())
         fw = self.fw
         addr = fw._sigs["u.isSwingAligned"][0]
@@ -941,7 +1060,7 @@ class TestValueHandling(unittest.TestCase):
     def test_out_of_range_integer_write_is_rejected(self):
         # WHY: fw["u.autoReqStep"] = 256 would silently become 0 (NoTarget) and -1 become 255;
         # a sweep over request values would test different stimuli than it reports.
-        # fixed: was wrapped modulo 2^n by the ctypes array store. Now firmware.py:163-171.
+        # fixed: was wrapped modulo 2^n by the ctypes array store. Now firmware.py:164-172.
         # Citation: MdlApp.h:1007 uint8_T autoReqStep, :1077 uint32_T cntCatcherSigRst, :1008 enum.
         self.assertTrue(_probe_integer_overflow_is_rejected())
         fw = self.fw
@@ -960,7 +1079,7 @@ class TestValueHandling(unittest.TestCase):
 
     def test_non_integral_or_non_numeric_writes_are_rejected(self):
         # WHY: a plant computing a step or id as float (1.9) would get 1 written with no warning.
-        # fixed: was int(v) truncation. Now firmware.py:159-166; integral floats still pass.
+        # fixed: was int(v) truncation. Now firmware.py:158-167; integral floats still pass.
         # Citation: MdlApp.h:1007 uint8_T autoReqStep.
         self.assertTrue(_probe_non_integral_float_to_int_is_rejected())
         fw = self.fw
@@ -981,10 +1100,21 @@ class TestValueHandling(unittest.TestCase):
         # WHY: the same stimulus-reporting hazard the integer checks close: a plant value of
         # 1e40 (a unit slip, a diverged physics step) reaches a real32_T inport as +inf, and a
         # trace shows inf with no hint that the write overflowed. inf itself stays writable.
-        # LIBRARY BUG (low): firmware.py:173 converts with float(v) and the c_float array store
-        # rounds anything above FLT_MAX (3.4028235e38) to inf without error.
+        # fixed (ce2b758): was float(v) straight into the c_float array store, which rounds
+        # anything above FLT_MAX (3.4028235e38) to inf without error. Now firmware.py:174-177.
         # Citation: MdlApp.h:1037 real32_T gnssPosStdDevZ (compared at MdlApp.c:39089-39106).
         self.assertTrue(_probe_float32_overflow_is_rejected())
+        fw = self.fw
+        for v in (float("inf"), float("-inf"), 3.4028234663852886e38, -3.4028234663852886e38):
+            fw["u.gnssPosStdDevZ"] = v
+            self.assertEqual(fw["u.gnssPosStdDevZ"], v)
+        fw["u.gnssPosStdDevZ"] = float("nan")
+        self.assertTrue(math.isnan(fw["u.gnssPosStdDevZ"]))
+        for v in (3.5e38, -3.5e38, 1e300):
+            with self.assertRaises(OverflowError, msg=repr(v)):
+                fw["u.gnssPosStdDevZ"] = v
+        fw["u.blh_Main"] = [1e300, 0.0, 0.0]                       # real_T: no float32 limit
+        self.assertEqual(fw["u.blh_Main"][0], 1e300)
 
 
 # ----------------------------------------------------------------------------------------
@@ -1051,7 +1181,7 @@ class TestHarnessIdioms(unittest.TestCase):
         # WHY: StartPause guards are rising-edge only; a level left high must not swallow the
         # next pulse. Asserted on the FIRMWARE's reaction (StartStopSts), not on the inport the
         # harness wrote -- the old version traced u.jstAutoReq_StartPause and was a tautology.
-        # Contract (harness.py:206-216): lower+tick if high, 1 for `ticks`, then 0 and ONE MORE
+        # Contract (harness.py:208-218): lower+tick if high, 1 for `ticks`, then 0 and ONE MORE
         # tick. Citation: chart_2537 guard [hasChanged(autoReq_StartPause) && autoReq_StartPause],
         # OR of jst|rmt at MdlApp.c:39724-39725, latched into a 1-bit field at :39743-39744.
         h = _positioning_paused()
@@ -1071,7 +1201,7 @@ class TestHarnessIdioms(unittest.TestCase):
         # commands. Without the trailing low tick the second pulse would find the firmware
         # still latched high (jst and rmt are OR-ed) and see no edge.
         # fixed: was one merged edge (pulse() left the input low without ticking).
-        # Citation: MdlApp.c:39724-39725 (OR), :39743-39744 (latch); harness.py:206-216.
+        # Citation: MdlApp.c:39724-39725 (OR), :39743-39744 (latch); harness.py:208-218.
         for second in ("u.jstAutoReq_StartPause", "u.rmtAutoReq_StartPause"):
             with self.subTest(second=second):
                 h = _positioning_paused()
@@ -1081,22 +1211,53 @@ class TestHarnessIdioms(unittest.TestCase):
                 self.assertEqual([r[1] for r in h.trace_rows], [True, True, False, False])
                 self.assertEqual(h.main_state(), "PositioningPaused")
 
+    def test_pulse_holds_the_input_for_ticks_steps_then_exactly_one_low_step(self):
+        # WHY: pulse(path, ticks=n) is how a scenario holds a button or a fault for n steps; every
+        # other test uses n = 1, where "hold for n" and "hold for one" are indistinguishable.
+        # Contract (harness.py:208-218): n steps at 1, then one step at 0, n + 1 steps in all.
+        # Observed on the FIRMWARE, not on the inport the harness wrote:
+        #   (a) level -- BIT_IMU_COM_ERR (bit 3) of y.autoCtrl_InhibitSts is set in the same step
+        #       from the raw OR of the IMU fault inports, no debounce or delay (MdlApp.c:39508-39518,
+        #       '<S170>:1:96' SetOrClearBit(status, BIT_IMU_COM_ERR, isImuFault)), so its column is
+        #       the level each step actually ran with;
+        #   (b) edge -- a hold is ONE StartPause edge, not n: running stays true for the whole
+        #       hold and its trailing low step, and the next pulse is the next edge (pause).
+        for n in (1, 3, 7):
+            with self.subTest(ticks=n):
+                h = _booted()
+                self.assertFalse(h.inhibit_bit("IMU_COM_ERR"))
+                h.trace("y.autoCtrl_InhibitSts")
+                t0 = h.tick_count
+                h.pulse("u.isChsImuFault", ticks=n)
+                self.assertEqual(h.tick_count - t0, n + 1)
+                self.assertEqual([bool(r[1] >> 3 & 1) for r in h.trace_rows], [True] * n + [False])
+                self.assertEqual(h.fw["u.isChsImuFault"], False)
+        h = _positioning_paused()
+        h.trace("y.autoCtrl_StartStopSts")
+        h.pulse("u.jstAutoReq_StartPause", ticks=4)
+        self.assertEqual([r[1] for r in h.trace_rows], [True] * 5)
+        h.pulse("u.rmtAutoReq_StartPause", ticks=2)
+        self.assertEqual([r[1] for r in h.trace_rows], [True] * 5 + [False] * 3)
+        self.assertEqual(h.main_state(), "PositioningPaused")
+
     def test_request_step_re_edges_through_255_which_no_guard_compares(self):
         # WHY: the one-tick "re-edge" value must never be a request itself.
         # fixed: was `0 if val else 1`, so request_step('NoTarget') from 0 injected a real Standby
         # request (T284 NoTarget -> Standby, chart_2537 SSID 284, MdlApp.c:22940-22944).
-        # Source proof that 255 is inert: every read of MdlApp_U.autoReqStep is either the
-        # hasChanged latch (:39741-39742) or `== ((int32_T)<AutoCtrlStep name>)`, never NoTarget
-        # and never a number; the latch DW.autoReq_Step_start is only initialised, copied to
-        # _prev, or compared with `!=`. Harness: RE_EDGE_STEP harness.py:45, request_step :225-232.
+        # Source proof that 255 is inert, part 1 (reads): every read of MdlApp_U.autoReqStep is
+        # either the hasChanged latch (:39741-39742) or `== ((int32_T)<AutoCtrlStep name>)`, never
+        # NoTarget and never a number; the latch DW.autoReq_Step_start is only initialised, copied
+        # to _prev, or compared with `!=`. Part 2 (how the guards COMBINE those reads, which a
+        # read count cannot see) is test_every_autoreq_guard_is_inert_on_the_re_edge_tick.
+        # Harness: RE_EDGE_STEP harness.py:45, request_step :227-234.
         fw = firmware()
         src = _mdlapp_c()
         reads = re.findall(r"MdlApp_U\s*\.\s*autoReqStep\b", src)
-        compared = re.findall(r"\(\(int32_T\)\s*MdlApp_U\s*\.\s*autoReqStep\s*\)\s*==\s*\(\(int32_T\)\s*(\w+)\s*\)", src)
+        compared = _REQ_EQ.findall(src)
         self.assertEqual(len(reads), len(compared) + 1)
         self.assertTrue(set(compared) <= set(fw.enums["AutoCtrlStep"]))
         self.assertNotIn("NoTarget", compared)
-        flat = re.sub(r"\s+", " ", re.sub(r"/\*.*?\*/", " ", src, flags=re.S))
+        flat = _flat_code()
         for m in re.finditer(r"MdlApp_DW\.autoReq_Step_start", flat):
             ctx = flat[m.start() - 30:m.end() + 30]
             self.assertTrue(re.search(r"!= MdlApp_DW\.autoReq_Step_start|autoReq_Step_prev = MdlApp_DW\.autoReq_Step_start;"
@@ -1124,13 +1285,88 @@ class TestHarnessIdioms(unittest.TestCase):
         self.assertEqual([r[1] for r in h.trace_rows], [RE_EDGE_STEP, 0, 0, 0])
         self.assertEqual({r[2] for r in h.trace_rows}, {0})
 
+    def test_every_autoreq_guard_is_inert_on_the_re_edge_tick(self):
+        # WHY: counting reads (test above) cannot tell `hasChanged && autoReqStep == X` from
+        # `hasChanged` alone, `hasChanged | ...` or `hasChanged && !(autoReqStep == X)`: the latch
+        # comparison reads DW, not U.autoReqStep, so such a guard adds no read and would FIRE on
+        # the 255 tick. A regenerated chart could introduce one without the count moving. So every
+        # if-condition that mentions the latch or the inport is parsed (casts dropped, every other
+        # operand a free 0/1 variable) and must evaluate on the 255 tick -- hasChanged true, all
+        # equalities false -- exactly as on a quiet tick for ANY latched value and ANY state of the
+        # other operands. Today 287 are exactly `hasChanged & (autoReqStep == <step>)`; one ANDs the
+        # target-valid delay into the pair (T284, MdlApp.c:22940-22942) and one ORs the pair with
+        # !isAutoCtrlInhibited (T221/T229 to PlacingPaused, :23654-23658), which the 255 tick
+        # leaves exactly as a quiet tick does. Coverage: the 289 `!= DW.autoReq_Step_start` and
+        # the 289 equalities found in guards are ALL of them in the file (the 290th read is the
+        # latch, :39742), so no hasChanged hides in an assignment the parser does not visit.
+        # Negative controls: hand-mutated guards must be reported, or the checker could be vacuous.
+        flat = _flat_code()
+        guards = []
+        for m in re.finditer(r"\bif \(", flat):
+            i = m.end() - 1
+            cond = flat[i + 1:_match_paren(flat, i)]
+            if "autoReq_Step_start" in cond or "autoReqStep" in cond:
+                guards.append(cond)
+        self.assertEqual(sum(len(_HAS_CHANGED.findall(g)) for g in guards),
+                         len(re.findall(r"!= MdlApp_DW\.autoReq_Step_start", flat)))
+        self.assertEqual(sum(len(_REQ_EQ.findall(g)) for g in guards), len(_REQ_EQ.findall(flat)))
+        self.assertEqual(len(guards), 289)
+        self.assertEqual([v for v in map(_re_edge_guard_violation, guards) if v], [])
+        pair = ("((*autoReq_Step_prev) != MdlApp_DW.autoReq_Step_start)",
+                "(((int32_T)MdlApp_U.autoReqStep) == ((int32_T)Positioning))")
+        self.assertIn("(%s & %s)" % pair, flat)
+        self.assertIsNone(_re_edge_guard_violation("(boolean_T)((int32_T)(%s & %s))" % pair))
+        for bad in ("(%s)" % pair[0], "(%s | %s)" % pair, "(%s & !%s)" % pair, "(%s ^ %s)" % pair,
+                    "(%s & (%s | MdlApp_U.isRmtOk))" % pair, "(%s | %s)" % (pair[1], "MdlApp_U.isRmtOk"),
+                    "(%s & ((int32_T)MdlApp_U.autoReqStep >= 2))" % pair[0]):
+            with self.subTest(mutated=bad):
+                self.assertIsNotNone(_re_edge_guard_violation(bad))
+
     def test_request_step_edges_against_the_latched_value_not_the_unticked_inport(self):
         # WHY: request_step promises "hasChanged() fires".
         # fixed: was a comparison against the current inport byte. hasChanged compares against
         # the value latched at the LAST STEP (MdlApp.c:39741-39742, autoReq_Step_start): latched
         # 1, test wrote 9 without stepping, request_step(1) saw 9 != 1, skipped the re-edge, and
-        # the step saw 1 -> 1. Now harness.py:176 records the latched value in tick().
+        # the step saw 1 -> 1. Now harness.py:178 records the latched value in tick().
         self.assertTrue(_probe_request_step_edges_against_latched_value())
+
+    def test_request_step_edges_against_a_value_a_plant_wrote_during_the_last_tick(self):
+        # WHY: plants run inside tick(), before MdlApp_step(). A scenario driver stacked in
+        # plant=[...] that writes u.autoReqStep changes what the firmware latches in THAT step, so
+        # tick() must record the latched value after the plants (harness.py:176-178). Recorded
+        # before them, request_step() right after that tick would compare against the pre-plant
+        # byte, skip the re-edge, and the firmware would see 1 -> 1: no hasChanged, no transition,
+        # and a scenario would time out blaming the firmware.
+        # Setup: the driver requests Standby while no target exists (T284 needs isTarPanelValid,
+        # through a unit delay: MdlApp.c:22940-22942 `*Delay1_kguq`), so the firmware latches 1
+        # and stays in NoTarget. The target is written after that tick; the hidden 255 tick
+        # also carries the valid target through the delay, and the next step sees 255 -> 1.
+        # Control: the same stimulus without request_step() leaves the firmware in NoTarget,
+        # which is what a harness that skipped the re-edge would produce.
+        standby = firmware().enum_value("AutoCtrlStep", "Standby")
+        write_at = 8
+
+        def run(use_request_step):
+            def driver(h):
+                if h.tick_count == write_at:
+                    h.fw["u.autoReqStep"] = standby
+            h = Harness(plant=driver).reset().nominal_inputs()
+            h.set_swing_aligned(True)
+            h.gnss_rtk_fixed()
+            h.tick(write_at + 1)                     # the last of these steps consumed the driver's write
+            if h.curr_step() != "NoTarget" or h.fw["u.autoReqStep"] != standby:
+                raise RuntimeError(f"precondition: {h.describe()}")
+            h.set_target_panel(panel_id=7)
+            h.trace("u.autoReqStep", "y.autoCtrl_CurrStep")
+            t0 = h.tick_count
+            if use_request_step:
+                h.request_step("Standby")
+            h.tick(3)
+            return h.tick_count - t0, [r[1:] for r in h.trace_rows]
+
+        self.assertEqual(run(True), (4, [[RE_EDGE_STEP, 0], [standby, standby], [standby, standby],
+                                         [standby, standby]]))
+        self.assertEqual(run(False), (3, [[standby, 0]] * 3))
 
     def test_re_requesting_the_current_step_stays_in_standby_with_no_state_effect(self):
         # WHY: the re-edge DOES fire a firmware transition -- T159, a Standby self-loop with
@@ -1164,7 +1400,7 @@ class TestHarnessIdioms(unittest.TestCase):
 
     def test_run_until_times_out_after_exactly_the_requested_ticks(self):
         # WHY: timeouts are the fail verdict of every scenario; an off-by-one changes verdicts
-        # at dwell boundaries. Citation: harness.py:191-203 (ticks_for :184-186).
+        # at dwell boundaries. Citation: harness.py:193-205 (ticks_for :185-188).
         h = self.h
         with self.assertRaises(StepTimeout):
             h.run_until(lambda h: False, 0.05, "never")
@@ -1178,7 +1414,7 @@ class TestHarnessIdioms(unittest.TestCase):
     def test_run_until_returns_immediately_when_condition_already_holds(self):
         # WHY: "the tick at which the condition first held" -- a one-tick output event visible
         # on entry must not be stepped past.
-        # fixed: was a tick before the first pred() check. Now harness.py:192-193.
+        # fixed: was a tick before the first pred() check. Now harness.py:194-195.
         # Citation: harness.py:21-23 (ONE-TICK SKEW doc).
         self.assertTrue(_probe_run_until_sees_condition_true_on_entry())
 
@@ -1187,7 +1423,7 @@ class TestHarnessIdioms(unittest.TestCase):
         # reads the outputs of the LAST step; inputs written since have not been stepped. A
         # request followed by run_until(<condition that is already true>) returns without the
         # firmware ever seeing the request. Wait for the condition the request should CHANGE.
-        # Citation: harness.py:191-193; T284 NoTarget -> Standby consumes u.autoReqStep in-step
+        # Citation: harness.py:193-195; T284 NoTarget -> Standby consumes u.autoReqStep in-step
         # (MdlApp.c:22940-22944, latched at :39741-39742).
         h = _booted()
         t0 = h.tick_count
@@ -1200,7 +1436,7 @@ class TestHarnessIdioms(unittest.TestCase):
     def test_run_seconds_rounds_half_ticks_up(self):
         # WHY: a delay sweep in 10 ms steps offset by 5 ms must test distinct tick counts.
         # fixed: was banker's rounding (0.015 -> 2, 0.025 -> 2, 0.005 -> 0).
-        # Citation: harness.py:184-189; DT = 0.01 (harness.py:44, SysPar.m:1 SampleTime).
+        # Citation: harness.py:185-191; DT = 0.01 (harness.py:44, SysPar.m:1 SampleTime).
         self.assertTrue(_probe_run_seconds_is_strictly_monotone_on_half_ticks())
         for s, n in ((0.004, 0), (0.005, 1), (0.015, 2), (0.025, 3), (0.035, 4), (0.045, 5), (0.1, 10), (1.0, 100)):
             self.assertEqual(Harness.ticks_for(s), n, s)
@@ -1208,7 +1444,7 @@ class TestHarnessIdioms(unittest.TestCase):
     def test_trace_rows_are_post_step_and_one_based(self):
         # WHY: trace CSVs are SIL evidence; row N must be the output of the N-th step. The whole
         # column is asserted: a pre-step sampler would give [0, 7, 7, 7].
-        # Citation: harness.py:172-181; in NoTarget y.tarPanelIdAck follows tarPanelData.id in the
+        # Citation: harness.py:174-183; in NoTarget y.tarPanelIdAck follows tarPanelData.id in the
         # same step (target latch runs after the chart, MdlApp.c:40922-40957, ack at :40949).
         h = self.h
         h.trace("y.tarPanelIdAck")
@@ -1219,19 +1455,19 @@ class TestHarnessIdioms(unittest.TestCase):
 
     def test_trace_rows_stay_rectangular_when_paths_change(self):
         # WHY: save_trace() writes one header; earlier rows would sit under the wrong columns.
-        # fixed: was trace() replacing trace_paths but keeping trace_rows. Now harness.py:336-340.
+        # fixed: was trace() replacing trace_paths but keeping trace_rows. Now harness.py:343-347.
         # Citation: MdlApp.h:1082-1175 (the y.* columns traced).
         self.assertTrue(_probe_trace_rows_stay_rectangular())
 
     def test_trace_array_floats_keep_float32_precision(self):
         # WHY: trace CSVs are compared across runs/firmware revisions.
-        # fixed: was f"{x:g}" (6 significant digits, 1.0000001 -> "1"). Now repr, harness.py:343-346.
+        # fixed: was f"{x:g}" (6 significant digits, 1.0000001 -> "1"). Now repr, harness.py:349-353.
         # Citation: MdlApp.h:987 real32_T chsImuQuat[4].
         self.assertTrue(_probe_trace_array_floats_keep_precision())
 
     def test_plants_run_in_list_order_before_every_step(self):
         # WHY: SaveHandshake must see Y of the previous step and write U before the next one, and
-        # an Isaac plant stacked with it must not reorder that. Citation: harness.py:96, :172-178;
+        # an Isaac plant stacked with it must not reorder that. Citation: harness.py:98, :174-180;
         # the ECU runs SaveMchCalibData after MdlApp_step in the same task (main.c:180-199).
         seen = []
         h = Harness(plant=[lambda h: seen.append(("f", h.tick_count)),
@@ -1251,6 +1487,12 @@ class TestSaveHandshake(unittest.TestCase):
         # WHY: the emulation's edge logic is what makes a calibration finish fast; a level or
         # repeated snapshot would record the wrong NVM history. Driven by writing y.* directly,
         # no firmware step, so only SaveHandshake is under test.
+        # Snapshot CONTENT is not pinned by a leaf count: a hardcoded 55 + 72 + 40 broke with a
+        # bare "168 != 167" the moment y.jntAngRotZeroOffs was added to SNAPSHOT_PREFIXES. The keys
+        # must be exactly the y.* leaves under the prefixes (each prefix matching something, so a
+        # typo cannot silently drop a group), and must include every path the ECU glue persists
+        # (independent source, AppCtrlIf.c:802-1018; 116 today -- the snapshot takes whole
+        # structs, 168 leaves, so it is a superset). Adding a prefix therefore needs no edit here.
         # Citation: main.c:399-418 (clear when no request; SaveInternalParam+WriteToNVM on rising
         # edge; ReadInternalParam on falling edge; isCalibDataSaved = wasCalibDataSaved).
         emu = SaveHandshake()
@@ -1266,7 +1508,11 @@ class TestSaveHandshake(unittest.TestCase):
         tick, snap = emu.saved[0]
         self.assertEqual(tick, 0)
         self.assertEqual(snap["y.parKin.lenArm"], 2.5)
-        self.assertEqual(len(snap), 55 + 72 + 40 + 1)   # + y.jntAngRotZeroOffs (AppCtrlIf.c:882)
+        self.assertEqual(set(snap), {p for p in fw.paths("y.") if p.startswith(SaveHandshake.SNAPSHOT_PREFIXES)})
+        for prefix in SaveHandshake.SNAPSHOT_PREFIXES:
+            self.assertTrue(any(p.startswith(prefix) for p in snap), prefix)
+        self.assertEqual(set(_glue_persisted_y_paths()) - set(snap), set())
+        self.assertEqual(snap, {p: fw[p] for p in snap})
         self.assertTrue(fw["u.isCalibDataSaved"])
         fw["y.isCalibDataSaveReq"] = 0
         emu(h)
@@ -1315,12 +1561,12 @@ class TestSaveHandshake(unittest.TestCase):
     def test_snapshot_covers_every_output_the_ecu_persists(self):
         # WHY: `saved` stands for SaveInternalParam() + WriteToNVM(); a calibration result the ECU
         # persists but the snapshot omits cannot be checked in SIL.
-        # LIBRARY BUG (low): harness.py:69 SNAPSHOT_PREFIXES has y.parKin / y.imuMntOri /
-        # y.tblReqSpdToActCmd but not y.jntAngRotZeroOffs, which the glue copies into INTP while
-        # isCalibrating (AppCtrlIf.c:882) alongside the rest (AppCtrlIf.c:801-1018). Fix: add
-        # "y.jntAngRotZeroOffs" to SNAPSHOT_PREFIXES. (This is the CalibRot step-26 result;
-        # firmware writes it at MdlApp.c:43357-43372.)
+        # fixed (ce2b758): was SNAPSHOT_PREFIXES without y.jntAngRotZeroOffs, which the glue copies
+        # into INTP while isCalibrating (AppCtrlIf.c:882) alongside the rest (AppCtrlIf.c:802-1018).
+        # Now harness.py:71. (This is the CalibRot step-26 result; firmware writes it at
+        # MdlApp.c:43357-43372.)
         self.assertTrue(_probe_save_snapshot_covers_every_persisted_output())
+        self.assertIn("y.jntAngRotZeroOffs", _glue_persisted_y_paths())
 
 
 # ----------------------------------------------------------------------------------------
@@ -1355,7 +1601,7 @@ class TestHostArithmetic(unittest.TestCase):
         # BASELINE ONLY: this checks the test process at test time; co-simulation protection is
         # the per-step guard tested below. The exception-mask check proves the MXCSR field was
         # really read (a zero buffer would pass the FTZ/DAZ checks).
-        # Citation: build.py:274 -ffp-contract=off; MdlApp.h:11 "Embedded hardware selection:
+        # Citation: build.py:276 -ffp-contract=off; MdlApp.h:11 "Embedded hardware selection:
         # Infineon->TriCore".
         self.assertIn("-ffp-contract=off", firmware().manifest["flags"])
         if not X86_64_LINUX:
@@ -1377,7 +1623,7 @@ class TestHostArithmetic(unittest.TestCase):
         # WHY: a physics runtime in the same process may enable flush-to-zero/denormals-are-zero
         # or change rounding; the firmware's filters would change with no visible error. Set in a
         # CHILD process through glibc fesetenv (MXCSR at fenv_t+28) and fesetround(FE_UPWARD).
-        # Citation: build.py:261-265 sil_fp_env_violation; firmware.py:114-117.
+        # Citation: build.py:261-267 sil_fp_env_violation; firmware.py:115-118.
         if not X86_64_LINUX:
             self.skipTest("MXCSR is x86-64 specific")
         child = _run_child(r"""
@@ -1427,12 +1673,13 @@ print(json.dumps(res))
         # one that matters. Measured in a child: MXCSR RC = round-up written directly (what
         # _MM_SET_ROUNDING_MODE / _mm_setcsr do -- the same register the guard already watches for
         # FTZ/DAZ) changes the last bits of y.links.* after 50 steps, while fegetround() still
-        # reports FE_TONEAREST and the guard returns 0.
-        # LIBRARY BUG (medium): build.py:262-263 checks `_mm_getcsr() & 0x8040` (FTZ|DAZ) plus
-        # fegetround(), and glibc's x86-64 fegetround reads only the x87 control word. The SSE
-        # rounding bits 0x6000 are never checked. Fix: `_mm_getcsr() & 0xE040u`.
-        # Citation: MdlApp.h:11 TriCore single precision; firmware.py:23-25 claims "the rounding mode".
+        # reports FE_TONEAREST -- which is why the guard cannot rely on fegetround().
+        # fixed (ce2b758): was `_mm_getcsr() & 0x8040` (FTZ|DAZ) plus fegetround(), and glibc's
+        # x86-64 fegetround reads only the x87 control word, so the SSE rounding bits 0x6000 were
+        # never checked and the guard returned 0. Now `& 0xE040u`, build.py:264.
+        # Citation: MdlApp.h:11 TriCore single precision; firmware.py:23-25 "the rounding mode".
         self.assertTrue(_probe_fp_guard_sees_sse_rounding_mode())
+        self.assertIn("_mm_getcsr() & 0xE040u", (BUILD / "sil_table.c").read_text())
 
 
 # ----------------------------------------------------------------------------------------
@@ -1502,7 +1749,7 @@ class TestKinematicsLibrary(unittest.TestCase):
         # matrix, joint angles and joint rates.
         # Citation: linkOri = imuOri*mntOri MdlApp.c:10940; chassis 312 Euler y.chs.euAngSeq;
         # joint angles/rates from IMU differences (MdlApp.c:12411 boom swing pinned 0);
-        # kinematics.py:151-176.
+        # kinematics.py:152-177.
         h = Harness().reset().nominal_inputs()
         fw = h.fw
         R = kin.Rz(0.3) @ kin.Ry(0.1) @ kin.Rx(-0.08)
@@ -1531,12 +1778,12 @@ class TestKinematicsLibrary(unittest.TestCase):
         # the RAW input angle and only then low-pass filters every joint angle (MdlApp.c:12410-12425,
         # 3 Hz), so comparing against y.jnts.ArmToInpLink.q needs the filter settled per sample.
         # Non-closing region (det < 0): the firmware zeroes angOutpLink RELATIVE to the ground
-        # link, so y.jnts.ArmToOutpLink.q reads angArmToGndLink (0.0716 rad), not 0 -- the
-        # "firmware would output 0" wording in kinematics.py:136-137 is loose (reported as a doc
-        # issue; the None return itself is fine). The compiled geometry is Grashof double-crank
-        # and always closes, so the region is produced by patching lenConnRod.
+        # link, so y.jnts.ArmToOutpLink.q reads angArmToGndLink (0.0716 rad), not 0.
+        # fixed (ce2b758, docstring only): kinematics.py:136-139 said the firmware would output 0;
+        # it now says angArmToGndLink. The None return was always right. The compiled geometry is
+        # Grashof double-crank and always closes, so the region is produced by patching lenConnRod.
         # Citation: MdlApp.c:11145-11200 CalcAngLinkOutp (det < 0 -> angOutpLink = 0 at :11178-11182),
-        # :11789-11808 (+ angArmToGndLink, WrapToPi); kinematics.py:134-148.
+        # :11789-11808 (+ angArmToGndLink, WrapToPi); kinematics.py:134-149.
         h = Harness().reset().nominal_inputs()
         fw = h.fw
         R_bm1 = kin.Ry(math.radians(-40))
@@ -1570,7 +1817,7 @@ class TestKinematicsLibrary(unittest.TestCase):
         # identify_mount_source must name the set actually in par.* -- before and after
         # load_imu_mounts(), and again after reset().
         # Citation: SysPar.m:4 (compiled set = ECR88D_ShortArm); ControlModel/Data/ECR88D_*.m imu*
-        # blocks; kinematics.py:92-130; harness.py:139-146.
+        # blocks; kinematics.py:92-130; harness.py:141-148.
         h = Harness().reset()
         fw = h.fw
         data = _x1exc() / "ControlModel" / "Data"
@@ -1599,8 +1846,8 @@ class TestGeodesyLibrary(unittest.TestCase):
         # coefficient shows as a scale error that grows with distance from the site origin.
         # Independent checks: forward(inverse) round trip; northing on the central meridian equals
         # the numerically integrated meridian arc; point scale on the central meridian is k0.
-        # Citation: geodesy.py:31-96 (Karney 2011 eqs. 35/36); firmware side checked in the
-        # place_chassis test below. WGS84 a/1/f as written by Site.write (geodesy.py:110-114).
+        # Citation: geodesy.py:32-97 (Karney 2011 eqs. 35/36); firmware side checked in the
+        # place_chassis test below. WGS84 a/1/f as written by Site.write (geodesy.py:111-115).
         lat0 = math.radians(32.9)
         tm = geo.KruegerTM(lat0, math.radians(-96.8))
         worst = 0.0
@@ -1636,7 +1883,7 @@ class TestGeodesyLibrary(unittest.TestCase):
         # Y offset (a wrong chassis-axis convention) must visibly move heading and position.
         # Citation: links.chs.p = mainAnt + R_chs*distAntMainToChs (spec A3); Localization inports
         # MdlApp.c:41996-42020; heading = pi/2 - euAng_ChsEstm_z, :13422-13442, baseline angle
-        # :11768-11772; geodesy.py:132-153.
+        # :11768-11772; geodesy.py:140-154.
         R = kin.Rz(-0.7) @ kin.Ry(-0.05) @ kin.Rx(0.06)
         sites = (geo.Site(), geo.Site(false_e=500000.0, false_n=-3000.0, site_origin=[500123.0, -2500.0, 150.0]),
                  geo.Site(lat0_deg=37.5, lon0_deg=127.0, h0=40.0))
@@ -1669,13 +1916,15 @@ class TestGeodesyLibrary(unittest.TestCase):
 
     def test_machheading_is_pi_over_2_minus_the_312_yaw_not_the_azimuth_of_chassis_x(self):
         # WHY: a plant or scenario that computes the expected heading as "the clockwise-from-North
-        # azimuth of chassis +X" (geodesy.py:17-18) is off by 0.46 deg at roll -4.6 / pitch 5.7 deg.
-        # What the firmware reports is wrap(pi/2 - psi) with psi the 312 yaw (atan2(-R01, R11), the
-        # azimuth of chassis +Y minus 90 deg), which equals the +X azimuth only for a level chassis.
-        # Reported as a docstring issue; no library function computes heading.
+        # azimuth of chassis +X" is off by 0.46 deg at roll -4.6 / pitch 5.7 deg. What the firmware
+        # reports is wrap(pi/2 - psi) with psi the 312 yaw (atan2(-R01, R11), the azimuth of chassis
+        # +Y minus 90 deg), which equals the +X azimuth only for a level chassis. No library
+        # function computes heading, so this pins the rule scenarios must use.
+        # fixed (ce2b758, docstring only): geodesy.py used to call heading the +X azimuth
+        # unconditionally; geodesy.py:16-19 now says tilt-compensated, +X azimuth only when level.
         # Citation: machHeading = WrapToPi(pi/2 - euAng_ChsEstm_z) MdlApp.c:13422-13442, where
         # euAng_ChsEstm_z is the tilt-compensated antenna-baseline angle (:11768-11772) and matches
-        # y.chs.euAng[2] of the 312 sequence (y.chs.euAngSeq, :11099-11100); geodesy.py:17-18.
+        # y.chs.euAng[2] of the 312 sequence (y.chs.euAngSeq, :11099-11100).
         R = kin.Rz(1.2) @ kin.Ry(0.1) @ kin.Rx(-0.08)
         h = Harness().reset().nominal_inputs()
         h.set_pose(R_chs=R, **Harness.NOMINAL_POSE)

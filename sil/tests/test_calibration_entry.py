@@ -53,11 +53,13 @@ MIN_TBL_REQ_SPD = 0.002     # SysPar.m:112
 # ------------------------------------------------------------------------------------
 # helpers
 # ------------------------------------------------------------------------------------
-def booted(swing_level=True, gnss=True, plant=None):
+def booted(swing_level=True, gnss=True, plant=None, before_first_step=None):
     """Healthy machine at the harness rest pose, idle in NoTarget. swing_level=True HOLDS the
     proximity switch closed (house aligned); False only pulses it, so the boot latch is set but
-    the switch is open."""
+    the switch is open. before_first_step(h) writes inputs that MdlApp's one-time inits would see."""
     h = Harness(plant=plant).reset().nominal_inputs()
+    if before_first_step is not None:
+        before_first_step(h)
     if swing_level:
         h.set_swing_aligned(True)
     else:
@@ -95,6 +97,12 @@ def calib_is(h, name):
 
 def mat(fw, path):
     return np.array(fw[path], dtype=np.float64).reshape(3, 3, order="F")   # MATLAB column-major
+
+
+def mount(src, prefix):
+    """3x3 from the a11..a33 fields under `prefix` ('par.imuChs', 'y.imuMntOri_chs'); `src` is the
+    firmware or a SaveHandshake snapshot dict."""
+    return np.array([[src[f"{prefix}.a{r}{c}"] for c in (1, 2, 3)] for r in (1, 2, 3)], dtype=np.float64)
 
 
 def vec(fw, path):
@@ -161,11 +169,14 @@ def solve_pose(h, residual, q0, tol=2e-6):
     raise AssertionError(f"pose solve did not converge: residual {r}")
 
 
+NOISE_SEEDS = range(1, 21)   # noise tests assert per seed (or across seeds), never one lucky seed
+
+
 class AccelNoise:
     """Plant: white noise on the chassis accelerometer around what the shared publisher wrote
     (nominal_inputs, mirrored frame). Local: the library publishes noise-free IMUs."""
 
-    def __init__(self, sigma, seed=7):
+    def __init__(self, sigma, seed):
         self.rng = np.random.default_rng(seed)
         self.sigma = sigma
         self.base = None
@@ -371,18 +382,37 @@ class TestCalibEntry(unittest.TestCase):
         h.fw["u.tabletAutoReq_Cancel"] = 0
 
     def test_harness_jump_to_step_from_a_running_calibration_does_nothing(self):
-        # LIBRARY BUG (documentation): Harness.jump_to_step says "Does nothing from a running state
-        # -- pause first". With start=True it still pulses StartPause, and in a running state that
-        # edge IS the pause: the step change is ignored but the running calibration is paused and
-        # its dwell aborted. This test asserts the documented behaviour and fails.
-        # FW: running CalibForkRefPose [autoReq_Stop || (hasChanged(StartPause) && StartPause)]
-        # -> _Paused (MdlApp.c:18960); CalibStepMgr aborts on ~isCalibrating (:30133).
+        # WHY: regression test for a harness fix (ce2b758). jump_to_step used to request the step
+        # and pulse StartPause even while a calibration ran; the firmware ignores the step change
+        # there, so the pulse's only effect was to PAUSE the run and abort its dwell. The harness now
+        # returns without writing or ticking while isCalibrating (a running calibration does not
+        # raise autoCtrl_StartStopSts). Asserted both ways: the call is a true no-op (no tick, no
+        # autoReqStep write, dwell completes on schedule), and the old request + pulse still pauses,
+        # so the guard is load-bearing.
+        # FW: running CalibForkRefPose checks only Stop/StartPause, inhibit, calibStep == CalibStandby
+        # (MdlApp.c:18960, :18984, :19014) -- no step guard; [autoReq_Stop || (hasChanged(StartPause)
+        # && StartPause)] -> _Paused (:18960); CalibStepMgr aborts on ~isCalibrating (:30133).
         h = booted()
+        h.trace("y.calibStep")
         h.jump_to_step("CalibForkRefPose")
         h.tick(50)
+        ticks, req = h.tick_count, h.fw["u.autoReqStep"]
         h.jump_to_step("CalibChs")
+        self.assertEqual(h.tick_count, ticks)
+        self.assertEqual(h.fw["u.autoReqStep"], req)
         self.assertEqual(h.main_state(), "CalibForkRefPose")
         self.assertTrue(h.fw["y.isCalibrating"])
+        self.assertEqual(h.calib_step(), "ForkRefPose_stb")
+        h.run_until(lambda h: h.calib_step() == "ForkRefPose_log", 9.0, "log")
+        self.assertEqual(first_tick(h, "y.calibStep", calib_is(h, "ForkRefPose_log"))
+                         - first_tick(h, "y.calibStep", calib_is(h, "ForkRefPose_stb")), STB_TICKS)
+
+        h.request_step("CalibChs")                 # what jump_to_step used to do
+        h.tick(1)
+        h.pulse("u.jstAutoReq_StartPause")
+        self.assertEqual(h.main_state(), "CalibForkRefPose_Paused")
+        self.assertFalse(h.fw["y.isCalibrating"])
+        self.assertEqual(h.calib_step(), "CalibStandby")
 
 
 # ------------------------------------------------------------------------------------
@@ -390,13 +420,17 @@ class TestCalibGates(unittest.TestCase):
     """isSwingAligned (fork), RTK fix (travel), isCalibInhibited (everything, with isMachCalib)."""
 
     def test_fork_steps_need_the_live_swing_switch_not_the_boot_latch(self):
-        # WHY: spec A7 says fork steps are gated by ~isSwingAligned "so Step 0 still applies".
-        # The formula is right but the conclusion is not: Step 0's rising edge (the latch that
-        # clears BIT_SWING_NOT_INIT) is NOT enough -- the switch must be closed NOW. Conversely
-        # the non-fork steps ignore swing state entirely, latch included. A sim that pulses the
-        # switch at boot and then swings off-center can never run steps 28/29.
+        # WHY: spec A7 (l.523) says "Fork steps are gated by ~isSwingAligned" -- correct, and it
+        # means the LIVE switch level. Spec A6 Step 0 (l.365) tells the harness to pulse
+        # isSwingAligned 0->1 at boot, which sets the latch that clears BIT_SWING_NOT_INIT. Read
+        # together they suggest the boot pulse also satisfies the fork gate; it does not -- the
+        # switch must be closed NOW. Conversely the non-fork steps ignore swing state entirely, latch
+        # included, and BIT_SWING_NOT_INIT is outside CALIB_INHIBIT_MASK, so that holds with
+        # isMachCalib set too. A sim that pulses the switch at boot and then swings off-center can
+        # never run steps 28/29.
         # FW: LogicalOperator_cfu0 = MdlApp_U.isSwingAligned ^ 1 (MdlApp.c:39714, raw inport, no
-        # latch) -> ForkRefPose_Paused [isCalibInhibited || isSwingBasedAutoInhibited] (MdlApp.c:19379).
+        # latch) -> ForkRefPose_Paused [isCalibInhibited || isSwingBasedAutoInhibited] (MdlApp.c:19379);
+        # isCalibInhibited = (status & 13976) != 0 & isMachCalib (MdlApp.c:39679).
         for name in ("CalibForkRefPose", "CalibForkPntFront"):
             with self.subTest(step=name):
                 h = booted(swing_level=False)
@@ -414,12 +448,15 @@ class TestCalibGates(unittest.TestCase):
                 self.assertTrue(h.fw["y.isCalibrating"])
                 self.assertEqual(h.calib_step(), FIRST_SUBSTEP[name])
 
-        h = Harness().reset().nominal_inputs()               # switch never closed at all
-        h.tick(3)
-        self.assertIn("BIT_SWING_NOT_INIT", h.inhibit_names())
-        h.jump_to_step("CalibChs")
-        self.assertTrue(h.fw["y.isCalibrating"])
-        self.assertEqual(h.calib_step(), "ChsPntRef_stb")
+        for mach_calib in (0, 1):                            # switch never closed at all
+            with self.subTest(step="CalibChs", isMachCalib=mach_calib):
+                h = Harness().reset().nominal_inputs()
+                h.fw["u.isMachCalib"] = mach_calib
+                h.tick(3)
+                self.assertIn("BIT_SWING_NOT_INIT", h.inhibit_names())
+                h.jump_to_step("CalibChs")
+                self.assertTrue(h.fw["y.isCalibrating"])
+                self.assertEqual(h.calib_step(), "ChsPntRef_stb")
 
     def test_gated_paused_and_inhibited_states_alternate_every_tick(self):
         # WHY: the "Inhibited" state is not sticky for the swing and GNSS gates. A press on the
@@ -505,36 +542,58 @@ class TestCalibGates(unittest.TestCase):
         # FW: isGnssBasedCalibInhibited = (methodGnss_Main ~= 4 || methodGnss_Aux ~= 4),
         # MdlApp.c:39683; used only by CalibTrvl_Paused/CalibTrvl (MdlApp.c:22369, :21977).
         # Low-accuracy state = ~isRtkFixed || stdDevZ > poor threshold (ChkVerticalAccuracy <S157>,
-        # MdlApp.c:39081-39106); BIT_POOR_ACCURACY is in AUTO_INHIBIT_MASK, not CALIB_INHIBIT_MASK.
+        # MdlApp.c:39081-39106); BIT_POOR_ACCURACY is in AUTO_INHIBIT_MASK, not CALIB_INHIBIT_MASK
+        # (13976, MdlApp.c:39679) -- every case also runs with isMachCalib = 1, the only setting
+        # under which that mask can bite at all.
         for main, aux, sigma, ok in ((4, 0, 0.008, False), (0, 4, 0.008, False),
                                      (5, 5, 0.008, False), (4, 4, 0.5, True), (4, 4, 0.008, True)):
-            with self.subTest(main=main, aux=aux, sigma=sigma):
-                h = booted(gnss=False)
-                h.fw["u.methodGnss_Main"], h.fw["u.methodGnss_Aux"] = main, aux
-                h.fw["u.gnssPosStdDevZ"] = sigma
-                h.tick(30)                            # past the 20-tick accuracy on-delay
-                low = sigma > 0.04 or not main == aux == 4
-                self.assertEqual(bool(h.fw.internal("low_vertical_accuracy")), low)
-                self.assertEqual(h.auto_inhibited(), low)
-                h.jump_to_step("CalibTrvl")
-                h.tick(2)
-                self.assertEqual(bool(h.fw["y.isCalibrating"]), ok, h.describe())
+            for mach_calib in (0, 1):
+                with self.subTest(main=main, aux=aux, sigma=sigma, isMachCalib=mach_calib):
+                    h = booted(gnss=False)
+                    h.fw["u.methodGnss_Main"], h.fw["u.methodGnss_Aux"] = main, aux
+                    h.fw["u.gnssPosStdDevZ"] = sigma
+                    h.fw["u.isMachCalib"] = mach_calib
+                    h.tick(30)                            # past the 20-tick accuracy on-delay
+                    low = sigma > 0.04 or not main == aux == 4
+                    self.assertEqual(bool(h.fw.internal("low_vertical_accuracy")), low)
+                    self.assertEqual(h.auto_inhibited(), low)
+                    h.jump_to_step("CalibTrvl")
+                    h.tick(2)
+                    self.assertEqual(bool(h.fw["y.isCalibrating"]), ok, h.describe())
         for name in CALIB_STEPS:
             if name == "CalibTrvl":
                 continue
-            with self.subTest(step=name, gnss="none"):
-                h = booted(gnss=False)
-                h.jump_to_step(name)
-                self.assertTrue(h.fw["y.isCalibrating"])
+            for mach_calib in (0, 1):
+                with self.subTest(step=name, gnss="none", isMachCalib=mach_calib):
+                    h = booted(gnss=False)
+                    h.fw["u.isMachCalib"] = mach_calib
+                    h.tick(30)
+                    self.assertTrue(h.fw.internal("low_vertical_accuracy"))
+                    h.jump_to_step(name)
+                    self.assertTrue(h.fw["y.isCalibrating"])
 
     def test_calib_inhibit_mask_only_bites_when_isMachCalib_is_set(self):
-        # WHY: spec A7 "isCalibInhibited is ANDed with isMachCalib" -- confirmed. isMachCalib is not
-        # derived from the step number: it is Svc_Mod_Req.calibModEntdActr, a service-mode flag in
-        # a different CAN message from the Auto_Mod_Req that carries autoReqStep (AppCtrlIf.c:141 <-
-        # InpHndlr.c:1189 vs :1184). Whether the tablet raises it during steps 20-29 is not in the
-        # firmware; if it does not, an IMU comm fault or remote-link error does not stop calibration.
+        # WHY: spec A7 "isCalibInhibited is ANDed with isMachCalib" -- confirmed, and the mask is
+        # selective: with isMachCalib set, in-mask faults (IMU comm, remote link) block calibration
+        # while out-of-mask auto inhibits (BIT_SWING_NOT_INIT, poor vertical accuracy) do not.
+        # isMachCalib is not derived from the step number: it is Svc_Mod_Req.calibModEntdActr, a
+        # service-mode flag in a different CAN message from the Auto_Mod_Req that carries autoReqStep
+        # (AppCtrlIf.c:141 <- InpHndlr.c:1189 vs :1184). The sender is outside this firmware, but the
+        # ECU's calibration backup/restore is keyed on the same bit -- in service mode a backup
+        # request with calibModEntdActr = 1 dumps the ACTUATOR calibration buffers (1,535 bytes,
+        # CanCtrl.c:1778-1806) -- so the HMI very likely raises it while it runs actuator
+        # calibration. QUESTION FOR DAVID: does the tablet hold calibModEntdActr = 1 during steps
+        # 20-29? If yes, an IMU comm fault or remote-link error stops calibration (isMachCalib = 1
+        # rows); if no, it does not (isMachCalib = 0 rows). The SIL must model whichever it is.
         # FW: isCalibInhibited = (status & 13976) != 0 & (isMachCalib != 0), MdlApp.c:39679;
-        # CALIB_INHIBIT_MASK 13976 includes BIT_IMU_COM_ERR and BIT_RMT_CTRL_ERR.
+        # CALIB_INHIBIT_MASK 13976 includes BIT_IMU_COM_ERR and BIT_RMT_CTRL_ERR, not
+        # BIT_SWING_NOT_INIT or BIT_POOR_ACCURACY (which are in AUTO_INHIBIT_MASK 51086, :39675).
+        bits = Harness().fw.inhibit_bits
+        calib_mask = {n for n, b in bits.items() if 13976 >> b & 1}
+        auto_mask = {n for n, b in bits.items() if 51086 >> b & 1}
+        self.assertTrue({"BIT_IMU_COM_ERR", "BIT_RMT_CTRL_ERR"} <= calib_mask, calib_mask)
+        self.assertFalse({"BIT_SWING_NOT_INIT", "BIT_POOR_ACCURACY"} & calib_mask, calib_mask)
+        self.assertTrue({"BIT_SWING_NOT_INIT", "BIT_POOR_ACCURACY"} <= auto_mask, auto_mask)
         for fault, bit in (("u.isChsImuFault", "IMU_COM_ERR"), ("u.isRmtOk", "RMT_CTRL_ERR")):
             for mach_calib in (0, 1):
                 with self.subTest(fault=fault, isMachCalib=mach_calib):
@@ -558,6 +617,29 @@ class TestCalibGates(unittest.TestCase):
         self.assertFalse(h.fw["y.isCalibrating"])
         h.pulse("u.jstAutoReq_StartPause")
         self.assertTrue(h.fw["y.isCalibrating"])
+
+        # Mask selectivity: out-of-mask auto inhibits with isMachCalib = 1 still start CalibChs.
+        def swing_never_closed():
+            h = Harness().reset().nominal_inputs()
+            h.gnss_rtk_fixed()
+            return h
+
+        def poor_vertical_accuracy():
+            return booted().gnss_rtk_fixed(std_dev_z=0.5)
+
+        for label, make, check in (
+                ("SWING_NOT_INIT", swing_never_closed, lambda h: h.inhibit_bit("SWING_NOT_INIT")),
+                ("POOR_ACCURACY", poor_vertical_accuracy, lambda h: h.fw.internal("low_vertical_accuracy"))):
+            with self.subTest(out_of_mask=label):
+                h = make()
+                h.fw["u.isMachCalib"] = 1
+                h.tick(30)                                      # past the 20-tick accuracy on-delay
+                self.assertTrue(check(h))
+                self.assertTrue(h.auto_inhibited())
+                self.assertFalse(h.inhibit_bit("IMU_COM_ERR") or h.inhibit_bit("RMT_CTRL_ERR"))
+                h.jump_to_step("CalibChs")
+                self.assertTrue(h.fw["y.isCalibrating"], h.describe())
+                self.assertEqual(h.calib_step(), "ChsPntRef_stb")
 
 
 # ------------------------------------------------------------------------------------
@@ -634,26 +716,71 @@ class TestForkRefPoseRun(unittest.TestCase):
         back = first_tick(h, "y.calibStep", calib_is(h, "CalibStandby"), after=save)
         self.assertEqual(back - save, SAVE_FALLBACK_TICKS)
 
-    def test_stray_save_ack_aborts_but_looks_exactly_like_success(self):
-        # WHY: spec A7 step 5 says "Success = calibStep returns to CalibStandby and CurrStep returns
-        # to NoTarget". The firmware gives that SAME signature when a spurious isCalibDataSaved
-        # edge arrives mid-dwell: the run aborts, nothing is logged or saved, and the main chart
-        # still reports NoTarget. A SIL pass criterion must also require isCalibDataSaveReq to
-        # have been raised.
-        # FW: abort guard shared by every sub-step, chart_1210 T346 (source: connective junction
-        # SSID 260), generated in ForkRefPose_stb at MdlApp.c:30133; main chart NoTarget at :19014.
+    def test_bare_harness_save_ack_mid_log_aborts_and_looks_like_success(self):
+        # WHY: a HARNESS hazard, not a firmware or spec defect. On the ECU a stray ack cannot occur:
+        # SaveMchCalibData() is the only writer of MdlApp_U.isCalibDataSaved (main.c:394-419, run
+        # every 10 ms after MdlApp_step, main.c:181/:199; the AppCtrlIf.c:564 write is commented
+        # out) and it raises the flag only after an isCalibDataSaveReq edge. So spec A7 step 5's
+        # success signature (calibStep -> CalibStandby, CurrStep -> NoTarget) is sufficient once the
+        # harness emulates that handshake as A7 requires. A harness that drives isCalibDataSaved
+        # itself (a bare Harness, or an Isaac-side NVM stub with its own timing) can instead abort a
+        # run with one stray edge: the tablet sees the success signature, no save request was ever
+        # raised, and the _log write has already replaced the fork geometry in y.parKin, where the
+        # next save of ANY calibration persists it (test_aborted_step28_value_is_persisted_by_the_next_save).
+        # Harness-side check: a calibration only passed if isCalibDataSaveReq was raised.
+        # FW: abort guard [... || (hasChanged(isCalibDataSaved) && isCalibDataSaved)] shared by every
+        # sub-step, chart_1210 T346 (source: connective junction SSID 260), generated in
+        # ForkRefPose_log at MdlApp.c:29983-29991; main chart NoTarget at :19014; the _log write
+        # chart_2352 l.16-21 (MdlApp.c:46043).
         h = self._started(booted())
-        h.tick(100)
-        before = fork_values(h.fw, "y")
-        h.fw["u.isCalibDataSaved"] = 1
+        fw = h.fw
+        compiled = fork_values(fw, "par")
+        h.run_until(lambda h: h.calib_step() == "ForkRefPose_log", 9.0, "log")
+        h.tick(50)
+        fw["u.isCalibDataSaved"] = 1
         h.tick(1)
         self.assertEqual(h.calib_step(), "CalibStandby")
         h.tick(1)
         self.assertEqual(h.curr_step(), "NoTarget")
-        self.assertFalse(h.fw["y.isCalibrating"])
-        self.assertFalse(any(r[3] for r in h.trace_rows))
-        self.assertFalse(any(r[2] == h.fw.enum_value("CalibStep", "ForkRefPose_log") for r in h.trace_rows))
-        self.assertEqual(fork_values(h.fw, "y"), before)
+        self.assertFalse(fw["y.isCalibrating"])
+        self.assertFalse(any(r[3] for r in h.trace_rows))                  # no save request, ever
+        self.assertFalse(any(r[2] == fw.enum_value("CalibStep", "ForkRefPose_save") for r in h.trace_rows))
+
+        ang, v = fork_ref_pose_formula(mat(fw, "y.links.uc.R"), vec(fw, "y.links.uc.p"),
+                                       mat(fw, "y.links.contactSurface.R"),
+                                       vec(fw, "y.links.contactSurface.p"))
+        got = fork_values(fw, "y")
+        self.assertGreater(abs(got["angForkUpLimit"] - compiled["angForkUpLimit"]), 0.5)
+        self.assertAlmostEqual(got["angForkUpLimit"], ang, delta=2e-5)     # the _log write landed
+        self.assertAlmostEqual(got["distUcToForkBack"][0], v[0], delta=2e-5)
+        h.tick(200)
+        self.assertEqual(fork_values(fw, "y"), got)
+
+    def test_save_handshake_owns_isCalibDataSaved_so_a_stray_write_cannot_abort(self):
+        # WHY: companion to the test above. With the main.c handshake emulated (harness.SaveHandshake,
+        # which rewrites u.isCalibDataSaved before every step as SaveMchCalibData does every cycle),
+        # the same stray write never reaches the firmware: the run stays in _log, raises the save
+        # request on schedule and saves once. This is why the spec's success criterion suffices on
+        # the ECU, and why a SIL harness must not share that inport with anything else.
+        # FW: main.c:394-419 (isCalibDataSaved = wasCalibDataSaved, only set on a request edge);
+        # log [cnt >= 100] MdlApp.c:29950; save request during _save :30083.
+        emu = SaveHandshake()
+        h = self._started(booted(plant=emu))
+        fw = h.fw
+        h.run_until(lambda h: h.calib_step() == "ForkRefPose_log", 9.0, "log")
+        h.tick(50)
+        fw["u.isCalibDataSaved"] = 1
+        h.tick(1)
+        self.assertFalse(fw["u.isCalibDataSaved"])                         # the plant overwrote it
+        self.assertEqual(h.calib_step(), "ForkRefPose_log")
+        self.assertTrue(fw["y.isCalibrating"])
+        h.run_until(lambda h: h.curr_step() == "NoTarget", 3.0, "NoTarget")
+        log = first_tick(h, "y.calibStep", calib_is(h, "ForkRefPose_log"))
+        save = first_tick(h, "y.calibStep", calib_is(h, "ForkRefPose_save"))
+        self.assertEqual(save - log, LOG_TICKS)
+        self.assertTrue(any(r[3] for r in h.trace_rows))
+        self.assertEqual(len(emu.saved), 1)
+        self.assertEqual(saved_fork(emu.saved[0][1]), fork_values(fw, "y"))
 
     def test_pause_mid_dwell_restarts_the_dwell(self):
         # WHY: the dwell is not resumable. A sim that pauses (e.g. to reposition the camera or to
@@ -739,6 +866,47 @@ class TestForkCalibWrites(unittest.TestCase):
         self.assertEqual(fork_values(fw, "par"), par0)                                   # no feedback
         self.assertAlmostEqual(fw["y.jnts.UcToFork.q"], par0["angForkUpLimit"], places=6)
 
+    def test_step28_on_a_tilted_machine_reads_the_fork_in_the_undercarriage_frame(self):
+        # WHY: every other step-28 run has a level house (uc.R = I), where uc.R' and uc.R are the same
+        # matrix and the undercarriage frame is invisible. The SIL will run step 28 on real terrain.
+        # With the chassis pitched 7 deg and rolled 5 deg (same joint angles) the stored fork geometry
+        # must be the level run's to float32 resolution -- it is expressed in the undercarriage frame
+        # -- and must match the chart's formula with the TRANSPOSE; uc.R in its place is off by
+        # ~14 deg and ~1.2 m here.
+        # FW: chart_2352 l.18 R_forkBack_uc = links.uc.R' * R_forkBack_W, l.20 vecTmp = links.uc.R' *
+        # (cs.p - uc.p) (MdlApp.c:46043-46096).
+        tilt = kin.Ry(math.radians(7)) @ kin.Rx(math.radians(5))
+        stored = {}
+        for label, R_chs in (("level", None), ("tilted", tilt)):
+            emu = SaveHandshake()
+            h = booted(plant=emu)
+            fw = h.fw
+            h.set_pose(R_chs=R_chs, **Harness.NOMINAL_POSE)
+            h.tick(SETTLE_TICKS)
+            h.jump_to_step("CalibForkRefPose")
+            h.run_until(lambda h: h.calib_step() == "ForkRefPose_save", 10.0, "save")
+            uc_R, uc_p = mat(fw, "y.links.uc.R"), vec(fw, "y.links.uc.p")
+            cs_R, cs_p = mat(fw, "y.links.contactSurface.R"), vec(fw, "y.links.contactSurface.p")
+            h.run_until(lambda h: h.curr_step() == "NoTarget", 2.0, "done")
+            self.assertEqual(len(emu.saved), 1)
+            stored[label] = saved_fork(emu.saved[0][1])
+            got = stored[label]
+            with self.subTest(chassis=label):
+                if label == "tilted":
+                    self.assertGreater(np.abs(uc_R - np.eye(3)).max(), 0.1)     # the tilt is visible
+                ang, v = fork_ref_pose_formula(uc_R, uc_p, cs_R, cs_p)
+                self.assertAlmostEqual(got["angForkUpLimit"], ang, delta=2e-5)
+                self.assertAlmostEqual(got["distUcToForkBack"][0], v[0], delta=2e-5)
+                self.assertAlmostEqual(got["distUcToForkBack"][2], v[2], delta=2e-5)
+                if label == "tilted":                                         # transpose is load-bearing
+                    wrong_ang = pitch(uc_R @ cs_R @ kin.Ry(-math.pi / 2))
+                    wrong_v = uc_R @ (cs_p - uc_p)
+                    self.assertGreater(abs(wrong_ang - got["angForkUpLimit"]), math.radians(10))
+                    self.assertGreater(abs(wrong_v[2] - got["distUcToForkBack"][2]), 1.0)
+        self.assertAlmostEqual(stored["tilted"]["angForkUpLimit"], stored["level"]["angForkUpLimit"], delta=2e-6)
+        np.testing.assert_allclose(stored["tilted"]["distUcToForkBack"], stored["level"]["distUcToForkBack"],
+                                   atol=2e-6)
+
     def test_step28_recovers_the_compiled_fork_geometry_with_the_tool_in_the_cradle(self):
         # WHY: this is the spec's step-28 pass criterion ("the firmware recovers the fork geometry"),
         # end to end: drive the IMUs until the firmware's own contact surface sits on its own
@@ -784,30 +952,46 @@ class TestForkCalibWrites(unittest.TestCase):
         # The sim's IMU noise on that single tick sets the stored fork geometry.
         # FW: chart_2352 `if calibStep == CalibStep.ForkRefPose_log ... angForkUpLimit = ...`
         # with no accumulator (MdlApp.c:46043, :46090).
+        # The expected value on every log tick is computed from that tick's y.links with the chart's
+        # own formula, NOT from y.parKin samples, so a reader that averaged y.parKin would not agree
+        # with itself here.
         h = booted()
         fw = h.fw
+
+        def fk_read():
+            return fork_ref_pose_formula(mat(fw, "y.links.uc.R"), vec(fw, "y.links.uc.p"),
+                                         mat(fw, "y.links.contactSurface.R"),
+                                         vec(fw, "y.links.contactSurface.p"))[0]
+
         h.jump_to_step("CalibForkRefPose")
         h.run_until(lambda h: h.calib_step() == "ForkRefPose_log", 9.0, "log")
-        window = [fw["y.parKin.angForkUpLimit"]]
+        expected, reported = [fk_read()], [fw["y.parKin.angForkUpLimit"]]
         for _ in range(LOG_TICKS - 2):
             h.tick()
             self.assertEqual(h.calib_step(), "ForkRefPose_log")
-            window.append(fw["y.parKin.angForkUpLimit"])
+            expected.append(fk_read())
+            reported.append(fw["y.parKin.angForkUpLimit"])
         kin.publish_imus(fw, {"chs": kin.Ry(math.radians(10))})   # glitch on the last log tick only
         h.tick()
         self.assertEqual(h.calib_step(), "ForkRefPose_log")
-        last = fw["y.parKin.angForkUpLimit"]
+        expected.append(fk_read())
+        reported.append(fw["y.parKin.angForkUpLimit"])
         h.set_pose(**Harness.NOMINAL_POSE)
         h.tick()
         self.assertEqual(h.calib_step(), "ForkRefPose_save")
         stored = fw["y.parKin.angForkUpLimit"]
         h.tick(200)
         self.assertEqual(fw["y.parKin.angForkUpLimit"], stored)
-        self.assertEqual(stored, last)
-        self.assertEqual(len(set(window)), 1)
-        mean = (sum(window) + last) / (len(window) + 1)
-        self.assertGreater(abs(stored - window[0]), 1e-3)
-        self.assertLess(abs(mean - window[0]), abs(stored - window[0]) / 50)
+
+        self.assertEqual(len(expected), LOG_TICKS)
+        np.testing.assert_allclose(reported, expected, rtol=0, atol=1e-6)   # overwritten every tick
+        self.assertAlmostEqual(stored, expected[-1], delta=1e-6)           # = the glitch tick's read
+        glitch = abs(expected[-1] - expected[0])
+        self.assertGreater(glitch, 0.02)                                   # 1.6 deg through the LPF
+        mean = sum(expected) / len(expected)
+        # An average of the log window would differ from the stored last sample by about
+        # glitch * 100/101 (verifier probe: -0.0274 rad), far outside any rounding.
+        self.assertGreater(abs(stored - mean), 0.5 * abs(glitch))
 
     def test_step29_measures_the_probe_from_the_uc_origin_not_the_fork_back(self):
         # WHY: step 29 stores (R_forkBack_W' * (probe.p - uc.p))_x as distForkBackToPanelTop, but the
@@ -903,7 +1087,7 @@ class TestAxisCalibWithoutPlant(unittest.TestCase):
         # pulse first; a noise-free stationary machine never produces one (onset is a 0.5 deg change
         # of the PLANAR accelerometer angle), so it parks in ChsLeMin forever, valve at 100 %.
         # FW: SetPropVlvCmdCalib staircase (chart_3055 l.53-66, 76, 83; SysPar.m:105, 109-110, 164);
-        # onset = |angCalib.chs - ref| > 0.5 deg (chart_2316 l.69, SysPar.m:131, MdlApp.c:44229);
+        # onset = |angCalib.chs - ref| > 0.5 deg (chart_2316 l.69, SysPar.m:131, MdlApp.c:44230-44233);
         # angCalib.chs = |planar angle of accRaw vs accRef| (chart_2291 l.107-129).
         emu = SaveHandshake()
         h = booted(plant=emu)
@@ -941,68 +1125,130 @@ class TestAxisCalibWithoutPlant(unittest.TestCase):
         # speed clamped to MinTblReqSpd 0.002 rad/s instead of 0.589), and that table's breakpoints
         # [0, 0.01, 0.002] are no longer monotonic although SysPar.m:112 sets the clamp "to have
         # monotonous change of the input array" -- the fixed 0.01 midpoint is above it. "Returned to
-        # NoTarget" is not evidence the machine moved. (Seeds 1..20: 20/20 timeouts at 2^-14 g,
-        # 18/20 at 1 mg -- two seeds crossed 170 deg on noise; all 40 runs saved, all 40 left the
-        # mount bit-identical.)
+        # NoTarget" is not evidence the machine moved.
+        # Asserted per seed over NOISE_SEEDS for both levels: saved once, mount bit-identical, table
+        # rewritten as above, ChsRiMoveToPnt2 exits in one tick. The ChsLeMoveToPnt1 TIMEOUT is
+        # per-seed only at 2^-14 g: at 1 mg the noise occasionally swings the horizontal component
+        # past AngChsPnt1 = 170 deg (SysPar.m:114) first (measured 18/20; the exit is then earlier),
+        # so there it is a majority check.
         # FW: _ToPnt guards MdlApp.c:28887 (angCalib.chs > AngChsPnt1 || cnt > CntCalib_timeout) and
         # :29662 (angCalib.chs < AngChsPnt2 || ...); mount only rebuilt if |cross(v1, v2)| > 1e-6
         # (chart_2291 l.191-213); table chart_2338 l.34, 53, 78-79; NVM copy AppCtrlIf.c:912-914.
         for sigma in (2.0 ** -14, 1e-3):
-            with self.subTest(sigma=sigma):
-                emu = SaveHandshake()
-                h = booted(plant=[AccelNoise(sigma, seed=7), emu])
-                fw = h.fw
-                mnt = [f"imuMntOri_chs.a{r}{c}" for r in (1, 2, 3) for c in (1, 2, 3)]
-                compiled_mnt = [fw[f"par.imuChs.a{r}{c}"] for r in (1, 2, 3) for c in (1, 2, 3)]
-                self.assertGreater(math.hypot(compiled_mnt[2], compiled_mnt[5]), 3e-3)
-                stored_peak = fw["par.reqSpdToActCmd.swingLe_X"][2]
-                h.trace("y.calibStep")
-                h.jump_to_step("CalibChs")
-                h.run_until(lambda h: h.curr_step() == "NoTarget", 60.0, "CalibChs done")
-                at = lambda name: first_tick(h, "y.calibStep", calib_is(h, name))
-                self.assertEqual(at("ChsPnt1_stb") - at("ChsLeMoveToPnt1"), TIMEOUT_TICKS)
-                self.assertEqual(at("ChsPnt2_stb") - at("ChsRiMoveToPnt2"), 1)
-                self.assertLess(at("Chs_save") - at("ChsPntRef_stb"), 5400)
-                self.assertEqual(len(emu.saved), 1)
-                snap = emu.saved[0][1]
-                self.assertEqual([snap[f"y.{p}"] for p in mnt], compiled_mnt)
-                self.assertEqual(snap["y.tblReqSpdToActCmd.swingLe_Y"][1], 19.5)
-                x = snap["y.tblReqSpdToActCmd.swingLe_X"]
-                self.assertAlmostEqual(x[2], MIN_TBL_REQ_SPD, places=6)
-                self.assertLess(x[2], 0.01 * stored_peak)
-                self.assertLess(x[2], x[1])                          # non-monotonic breakpoints
+            timeouts = 0
+            for seed in NOISE_SEEDS:
+                with self.subTest(sigma=sigma, seed=seed):
+                    emu = SaveHandshake()
+                    h = booted(plant=[AccelNoise(sigma, seed=seed), emu])
+                    fw = h.fw
+                    compiled_mnt = mount(fw, "par.imuChs")
+                    self.assertGreater(math.hypot(compiled_mnt[0, 2], compiled_mnt[1, 2]), 3e-3)
+                    stored_peak = fw["par.reqSpdToActCmd.swingLe_X"][2]
+                    h.trace("y.calibStep")
+                    h.jump_to_step("CalibChs")
+                    h.run_until(lambda h: h.curr_step() == "NoTarget", 60.0, "CalibChs done")
+                    at = lambda name: first_tick(h, "y.calibStep", calib_is(h, name))
+                    to_pnt1 = at("ChsPnt1_stb") - at("ChsLeMoveToPnt1")
+                    timeouts += to_pnt1 == TIMEOUT_TICKS
+                    if sigma < 1e-4:
+                        self.assertEqual(to_pnt1, TIMEOUT_TICKS)
+                    else:
+                        self.assertLessEqual(to_pnt1, TIMEOUT_TICKS)
+                    self.assertEqual(at("ChsPnt2_stb") - at("ChsRiMoveToPnt2"), 1)
+                    self.assertLess(at("Chs_save") - at("ChsPntRef_stb"), 5400)
+                    self.assertEqual(len(emu.saved), 1)
+                    snap = emu.saved[0][1]
+                    self.assertTrue(np.array_equal(mount(snap, "y.imuMntOri_chs"), compiled_mnt))
+                    self.assertEqual(snap["y.tblReqSpdToActCmd.swingLe_Y"][1], 19.5)
+                    x = snap["y.tblReqSpdToActCmd.swingLe_X"]
+                    self.assertAlmostEqual(x[2], MIN_TBL_REQ_SPD, places=6)
+                    self.assertLess(x[2], 0.01 * stored_peak)
+                    self.assertLess(x[2], x[1])                          # non-monotonic breakpoints
+            with self.subTest(sigma=sigma, check="timeout majority"):
+                self.assertGreaterEqual(timeouts, len(NOISE_SEEDS) // 2)
 
     def test_stationary_machine_with_30mg_vibration_rewrites_the_chassis_imu_mount(self):
         # WHY: raise the stationary machine's accelerometer noise to engine-vibration level (30 mg)
         # and the 1 s means v1 = accPnt1 - accRef, v2 = accPnt2 - accRef grow past the
         # |cross(v1, v2)| > 1e-6 gate, so a machine that never swung saves a new chassis IMU mount
-        # built from noise -- a valid rotation (det = +1) with a random yaw, here with z flipped --
-        # and nothing flags it. (Seeds 1..20: all 20 moved an element by > 0.25, 16 by > 0.8,
-        # 11 flipped a33.) In this build the result cannot hurt the controller only because
-        # kinematics reads parLocalTest.imuChs, not the calibrated output; the sim must still gate
-        # on it, because NVM receives it.
-        # FW: chart_2291 l.191-213 (v1, v2, vzNorm > 1e-6, imuMntOriCalib_chs = [vx vy vz]); copied to
-        # INTP.imuMntCalib_s while isCalibrating (AppCtrlIf.c:802-813); link attitude uses
-        # parLocalTest.imuChs (MdlApp.c:41898), MdlApp_U.*Stored has no reads; BIT_IMU_CALIB_ERR only
-        # from SanityCheckImuCalib's mast/base/uc Euler windows (chart_2516, MdlApp.c:39570).
-        emu = SaveHandshake()
-        h = booted(plant=[AccelNoise(3e-2, seed=7), emu])
-        fw = h.fw
-        mnt = [f"y.imuMntOri_chs.a{r}{c}" for r in (1, 2, 3) for c in (1, 2, 3)]
-        before = np.array([fw[p] for p in mnt])
-        chs_R_before = mat(fw, "y.links.chs.R")
-        self.assertAlmostEqual(before[8], 1.0, places=3)
-        h.jump_to_step("CalibChs")
-        h.run_until(lambda h: h.curr_step() == "NoTarget", 60.0, "CalibChs done")
-        after = np.array([fw[p] for p in mnt])
-        self.assertEqual(len(emu.saved), 1)
-        self.assertEqual([emu.saved[0][1][p] for p in mnt], list(after))
-        self.assertGreater(np.abs(after - before).max(), 0.5)
-        self.assertAlmostEqual(np.linalg.det(after.reshape(3, 3)), 1.0, places=3)
-        self.assertLess(after[8], -0.99)
-        h.tick(300)
-        self.assertNotIn("BIT_IMU_CALIB_ERR", h.inhibit_names())
-        np.testing.assert_allclose(mat(fw, "y.links.chs.R"), chs_R_before, atol=1e-5)
+        # built from noise, and nothing in the firmware flags it. Its shape is fixed by the
+        # algorithm, not by the seed: the _log means are renormalised unit vectors, so v1 and v2 lie
+        # across gravity and vz = cross(v1, v2) is +-gravity in board axes -- on this level machine
+        # +- the compiled z column; vy = cross(accRef, vz) is a cross of two near-parallel vectors,
+        # so its direction is noise. Result: a proper rotation with a RANDOM YAW, and an upside-down
+        # z whenever v1 x v2 happens to point down (a coin toss). Asserted per seed and across
+        # NOISE_SEEDS (measured: 20/20 rewritten, 11/20 flipped, yaw errors -169..+175 deg).
+        #
+        # Why it cannot hurt THIS build, and why that is no comfort: the calibrated mount is an
+        # output only. Link attitude reads parLocalTest.imuChs, and every u.*_MntOriStored inport --
+        # the ECU's NVM restore path -- is unread: an upside-down mount written to the chassis one
+        # before the first step reaches neither CalcImuMntOri's one-time init nor the link attitude,
+        # and feeding the rewritten mount back after the run changes nothing (both asserted). NVM
+        # still receives it, so the SIL must gate saved mounts itself, and the day the Stored path
+        # is wired this becomes a live fault.
+        # BIT_IMU_CALIB_ERR is no safety net either: it cannot be set in this build (not asserted --
+        # an absent bit proves nothing), see FW.
+        # FW: UpdateUnitAccAvg renormalises every sample (chart_2291 l.402-413); mount rebuild
+        # l.191-213 (vzNorm > 1e-6, imuMntOriCalib_chs = [vx vy vz]); copied to INTP.imuMntCalib_s
+        # while isCalibrating (AppCtrlIf.c:802-813). Link attitude from parLocalTest.imuChs
+        # (MdlApp.c:41894-41898); CalcImuMntOri's init from "chsImu_MntOriStored" (chart_2291 l.26-28)
+        # is generated as parLocalTest.imuChs reads (MdlApp.c:42925-42933) -- 'MntOriStored' occurs in
+        # MdlApp.c only inside comments -- while AppCtrlIf.c:565-573 fills the inport from NVM.
+        # BIT_IMU_CALIB_ERR: SetOrClearBit(status, BIT_IMU_CALIB_ERR, isImuCalibRequired) keeps only
+        # the clear branch (MdlApp.c:39570-39574); SanityCheckImuCalib (chart_2516, mast/base/uc Euler
+        # windows) generates no code ('AngImuCalibErr' occurs 0 times in MdlApp.c).
+        def write_stored_chs_mount(fw, M):
+            for r in (1, 2, 3):
+                for c in (1, 2, 3):
+                    fw[f"u.chsImu_MntOriStored.a{r}{c}"] = float(M[r - 1, c - 1])
+
+        def restore_upside_down_mount(h):          # what NVM would hand CalcImuMntOri's init
+            write_stored_chs_mount(h.fw, kin.Rx(math.pi) @ mount(h.fw, "par.imuChs"))
+
+        # Control: the one-time init does run on every reset, on the first step, from parLocalTest --
+        # so "init ignored the Stored inport" below is not vacuous.
+        h = booted(before_first_step=lambda h: kin.write_mounts(
+            h.fw, {"imuChs": kin.Rx(math.pi) @ mount(h.fw, "par.imuChs")}))
+        self.assertTrue(np.array_equal(mount(h.fw, "y.imuMntOri_chs"), mount(h.fw, "par.imuChs")))
+        self.assertLess(mount(h.fw, "y.imuMntOri_chs")[2, 2], -0.999)
+
+        flipped, yaw_err = 0, []
+        for seed in NOISE_SEEDS:
+            with self.subTest(seed=seed):
+                emu = SaveHandshake()
+                h = booted(plant=[AccelNoise(3e-2, seed=seed), emu], before_first_step=restore_upside_down_mount)
+                fw = h.fw
+                compiled = mount(fw, "par.imuChs")
+                self.assertTrue(np.array_equal(mount(fw, "y.imuMntOri_chs"), compiled))   # init ignored it
+                self.assertGreater(compiled[2, 2], 0.999)
+                chs_R_before = mat(fw, "y.links.chs.R")
+                np.testing.assert_allclose(chs_R_before, np.eye(3), atol=1e-6)             # FK ignored it
+                inhibit_before = h.inhibit_status()
+                h.jump_to_step("CalibChs")
+                h.run_until(lambda h: h.curr_step() == "NoTarget", 60.0, "CalibChs done")
+                after = mount(fw, "y.imuMntOri_chs")
+                self.assertEqual(len(emu.saved), 1)
+                self.assertTrue(np.array_equal(mount(emu.saved[0][1], "y.imuMntOri_chs"), after))
+                self.assertFalse(np.array_equal(after, compiled))                  # rewritten
+                np.testing.assert_allclose(after @ after.T, np.eye(3), atol=1e-5)  # a proper rotation
+                self.assertAlmostEqual(np.linalg.det(after), 1.0, places=5)
+                z_dot = float(after[:, 2] @ compiled[:, 2])
+                self.assertGreater(abs(z_dot), 0.99)                               # z = +-compiled z
+                flipped += z_dot < 0
+                yaw_err.append(math.atan2(after[1, 0], after[0, 0]) - math.atan2(compiled[1, 0], compiled[0, 0]))
+                self.assertEqual(h.inhibit_status(), inhibit_before)
+                np.testing.assert_allclose(mat(fw, "y.links.chs.R"), chs_R_before, atol=1e-6)
+
+                write_stored_chs_mount(fw, after)          # NVM restore path: dead in this build
+                h.tick(10)
+                np.testing.assert_allclose(mat(fw, "y.links.chs.R"), chs_R_before, atol=1e-6)
+                self.assertEqual(h.inhibit_status(), inhibit_before)
+        with self.subTest(check="across seeds"):
+            self.assertGreater(flipped, 0)                                   # upside down happens
+            self.assertLess(flipped, len(NOISE_SEEDS))                       # ... and so does upright
+            yaw = sorted(math.atan2(math.sin(a), math.cos(a)) for a in yaw_err)
+            gaps = [b - a for a, b in zip(yaw, yaw[1:])] + [yaw[0] + 2 * math.pi - yaw[-1]]
+            self.assertLess(max(gaps), math.pi)          # yaw errors are not confined to a half circle
 
 
 if __name__ == "__main__":
