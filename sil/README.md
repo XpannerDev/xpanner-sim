@@ -49,17 +49,8 @@ print(h.describe())
 ```bash
 cd ~/jude/xpanner-sim
 python3 sil/build.py
-mkdir -p build/isaac && chmod 777 build/isaac          # 컨테이너 uid 1234 가 쓸 수 있게
-xacro assets/ecr88/urdf/ecr88.urdf.xacro machine_variant:=ECR88_KIJANG model_cylinders:=false \
-      model_panel_stack:=false -o build/isaac/ecr88_kijang_step28.urdf
-# 자세 계획(백레스트 0.5 m 앞, 스윙 0) -> build/isaac/step28_pose.json : scripts/sil_isaac_step28.py 문서 참고
-docker exec isaac-sim-jude /isaac-sim/python.sh /work/xpanner-sim/scripts/urdf_to_usd.py \
-      --urdf /work/xpanner-sim/build/isaac/ecr88_kijang_step28.urdf \
-      --output /work/xpanner-sim/build/isaac/ecr88_kijang_step28.usd --rest-pose ...
-docker exec isaac-sim-jude /isaac-sim/python.sh /work/xpanner-sim/scripts/sil_isaac_step28.py \
-      --usd /work/xpanner-sim/build/isaac/ecr88_kijang_step28.usd \
-      --pose /work/xpanner-sim/build/isaac/step28_pose.json \
-      --report /work/xpanner-sim/build/isaac/step28_report.json
+python3 scripts/sil_step28_prepare.py     # 1.7 m URDF 전개 + 자세 계획 + 아래 두 docker 명령 출력
+# 출력된 두 줄(USD 변환, 실행)을 그대로 실행 -> build/isaac/step28_report.json
 ```
 
 2026-09-15 결과: 관절각 ≤ 3e-5°, `angForkUpLimit` 1e-4°, `distUcToForkBack` 0.008 mm.
