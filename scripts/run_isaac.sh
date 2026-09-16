@@ -12,6 +12,10 @@
 #   stream    headless Isaac Sim + WebRTC livestream (runheadless.sh)
 #   convert   run scripts/urdf_to_usd.py under /isaac-sim/python.sh; all remaining
 #             arguments are forwarded to it verbatim
+#   python    run ANY script under /isaac-sim/python.sh (first argument is the script,
+#             the rest are its arguments). Use this for a script that enables the WebRTC
+#             livestream itself -- scripts/isaac_stream_scene.py -- which is how a scene
+#             gets streamed without the GUI's crashing open-file path (see that file).
 #
 # GUARD RAILS
 #   * the container name defaults to isaac-sim-$USER-$$ -- the $$ (this shell's PID)
@@ -73,11 +77,14 @@ note() { printf '[run_isaac] %s\n' "$*" >&2; }
 
 usage() {
     cat >&2 <<EOF
-usage: $(basename -- "$0") {shell|stream|convert} [--force] [args...]
+usage: $(basename -- "$0") {shell|stream|convert|python} [--force] [args...]
 
   shell              interactive bash in ${IMAGE}
   stream             headless Isaac Sim + WebRTC livestream (runheadless.sh)
   convert [args...]  /isaac-sim/python.sh /work/${REPO_NAME}/scripts/urdf_to_usd.py [args...]
+  python SCRIPT [args...]
+                     /isaac-sim/python.sh SCRIPT [args...] with the livestream host/ports
+                     exported (scripts/isaac_stream_scene.py streams a scene this way)
 
   --force            skip ONLY the "GPU is busy" refusal (nvidia-smi threshold).
                      It does NOT skip the other-container check or the port check:
@@ -405,7 +412,7 @@ done
 set -- "${REST[@]}"
 
 case "${SUBCOMMAND}" in
-    shell|stream|convert) ;;
+    shell|stream|convert|python) ;;
     -h|--help|help) usage ;;
     *) printf '[run_isaac] unknown subcommand: %s\n\n' "${SUBCOMMAND}" >&2; usage ;;
 esac
@@ -420,7 +427,9 @@ check_no_other_isaac
 
 # Not `[ ... ] && check_ports_free`: a false test as the last command in a branch
 # would trip `set -e`.
-if [ "${SUBCOMMAND}" = "stream" ]; then
+# `python` can also bind the WebRTC ports (scripts/isaac_stream_scene.py turns the livestream on
+# itself), so it gets the same port guard as `stream`.
+if [ "${SUBCOMMAND}" = "stream" ] || [ "${SUBCOMMAND}" = "python" ]; then
     check_ports_free
 fi
 
@@ -463,6 +472,22 @@ case "${SUBCOMMAND}" in
         exec docker run "${TTY_FLAGS[@]}" --entrypoint bash "${COMMON[@]}" "${IMAGE}"
         ;;
 
+    python)
+        # Arbitrary script under /isaac-sim/python.sh, with the same guard rails. The livestream
+        # host/ports are exported so a script that turns streaming on itself (see
+        # scripts/isaac_stream_scene.py) uses the same values as the `stream` subcommand.
+        [ $# -ge 1 ] || die '[run_isaac] python needs a script path, e.g. /work/xpanner-sim/scripts/isaac_stream_scene.py'
+        HOST_IP="${ISAACSIM_HOST:-}"
+        if [ -z "${HOST_IP}" ]; then
+            HOST_IP="$(ec2_public_ip || true)"
+        fi
+        note "running /isaac-sim/python.sh $1 (livestream host ${HOST_IP:-unset})"
+        exec docker run "${TTY_FLAGS[@]}" --entrypoint /isaac-sim/python.sh "${COMMON[@]}" \
+            -e "ISAACSIM_HOST=${HOST_IP}" \
+            -e "ISAACSIM_SIGNAL_PORT=${SIGNAL_PORT}" \
+            -e "ISAACSIM_STREAM_PORT=${STREAM_PORT}" \
+            "${IMAGE}" "$@"
+        ;;
     convert)
         [ $# -ge 1 ] || die '[run_isaac] convert needs arguments, e.g. --xacro ... --output ...'
         note "converting via /isaac-sim/python.sh /work/${REPO_NAME}/scripts/urdf_to_usd.py"

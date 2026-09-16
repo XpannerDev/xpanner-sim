@@ -419,22 +419,60 @@ Isaac Sim 자체가 `carb::tasking::TaskGroup::~TaskGroup(): Destroying busy Tas
 기대값 (09-14): `check_stability.py` 가 **10 개 관절** 을 보고 `미수렴 0개 / 10`.
 `merge_fixed_joints` 는 기본 OFF — 켜면 `contact_surface_link`, `gnss_*_link`, IMU·카메라 마운트 프레임이 사라진다.
 
-### 6.4 GUI 에서 열기
+### 6.4 씬을 띄워서 스트리밍하기
 
-1. §3 으로 스트리밍 컨테이너를 띄운다 (래퍼든 수동이든 레포는 `/work/xpanner-sim` 에 마운트된다).
-2. 노트북 클라이언트로 **§3.0.2 의 `$PUBLIC_IP`** 에 접속.
-3. **File ▸ Open…** (`Ctrl+O`) → 컨테이너 안 경로:
+> 🚫 **GUI 의 File ▸ Open (`Ctrl+O`) 을 쓰지 말 것 — 앱이 죽는다** (2026-09-16, Isaac Sim 6.0.1).
+> 씬을 열면 기본 빈 스테이지가 닫히면서
+> `[omni.usd] Unexpected reference count of 2 for UsdStage 'anon:...:World0.usd' while being closed`
+> 가 찍히고, **약 2 분 뒤** 파이썬 GC 가 그 스테이지를 해제하며 `UsdStage::~UsdStage()` 에서 세그폴트한다
+> (exit 139, 두 번 재현, 백트레이스가 `Tf_PyOwnershipHelper` 를 지난다). 접속·스트리밍은 멀쩡하다가
+> 씬을 연 뒤에 끊기므로 네트워크 문제로 오해하기 쉽다.
+> `--/app/content/emptyStageOnStart=false` 로 빈 스테이지를 없애면 **교착**된다: 스테이지가 없으면 뷰포트가
+> 첫 프레임을 못 그려 앱이 준비 상태에 도달하지 못하고, 준비 후에 도는 `--exec` 도 영영 실행되지 않는다.
 
-   ```
-   /work/xpanner-sim/assets/site/solar_site.usd      # 현장 + 장비 + 카메라 + 작업 사이클
-   /work/xpanner-sim/assets/ecr88/usd/ecr88.usd      # 장비만
-   ```
+그래서 **씬을 연 채로 스트리밍을 시작하는 파이썬 진입점**을 쓴다. 앱 시작 → 라이브스트림 켜기 → 씬 한 번 열기
+순서를 스크립트가 잡으므로 닫히는 스테이지가 없다.
 
-4. 조작법·카메라·사이클 재생은 노션 "📋 시뮬레이션 tool" 페이지에 정리돼 있다.
+```bash
+cd ~/jude/xpanner-sim
+ISAAC_CONTAINER=isaac-sim-jude ./scripts/run_isaac.sh python \
+    /work/xpanner-sim/scripts/isaac_stream_scene.py            # 기본 solar_site.usd
+
+# 다른 씬:
+ISAAC_CONTAINER=isaac-sim-jude ./scripts/run_isaac.sh python \
+    /work/xpanner-sim/scripts/isaac_stream_scene.py --scene /work/xpanner-sim/assets/ecr88/usd/ecr88_physics.usd
+```
+
+로그에 아래 줄이 나오면 접속하면 된다 (캐시가 더워진 상태에서 1 분 안팎):
+
+```
+[stream_scene] open_stage(/work/xpanner-sim/assets/site/solar_site.usd) -> True
+[stream_scene] streaming ... -- connect the WebRTC client now
+```
+
+- `run_isaac.sh python SCRIPT [args...]` 는 임의 스크립트를 `/isaac-sim/python.sh` 로 돌리는 서브커맨드다.
+  컨테이너·GPU·**포트 점유 검사**가 `stream` 과 똑같이 걸리고, 라이브스트림 host/포트를 환경변수로 넘긴다.
+- 씬을 바꾸려면 **스크립트를 다시 띄운다.** 실행 중에 GUI 로 여는 것이 위 크래시 경로다.
+- 장비만 보려면 `ecr88.usd`, 물리를 돌릴 거면 실린더가 빠진 `ecr88_physics.usd`.
+- 조작법·카메라·사이클 재생은 노션 "📋 시뮬레이션 tool" 페이지에 정리돼 있다.
+- 순수 뷰어(빈 스테이지)로 띄우는 예전 방식은 `./scripts/run_isaac.sh stream` 으로 그대로 남아 있다 — 씬을 열지
+  않는 한 안전하다.
 
 ---
 
 ## 7. 문제 해결
+
+### 잘 보이다가 1~2 분 뒤 스트림이 끊긴다 (씬을 연 직후라면)
+
+**`Ctrl+O` 로 씬을 열었기 때문이다.** 앱이 세그폴트로 죽은 것이고 네트워크와 무관하다. 증상 확인:
+
+```bash
+grep -a "Unexpected reference count" <실행 로그>     # 씬을 연 순간
+grep -a "A crash has occurred"      <실행 로그>     # 그로부터 약 2 분 뒤
+docker ps                                          # 컨테이너가 사라져 있다
+```
+
+→ §6.4 의 `run_isaac.sh python scripts/isaac_stream_scene.py` 로 **씬을 연 채로** 띄울 것.
 
 ### 클라이언트가 연결됐다는데 화면이 검다 (가장 흔함)
 
