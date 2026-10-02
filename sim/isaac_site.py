@@ -130,8 +130,11 @@ def add_bench(stage, path, centre_xy, half, height):
 
 
 def add_person(stage, path, xyz, height=1.75, radius=0.22):
-    """A capsule person. Visual + collision, labelled 'person' for the semantic camera."""
-    from pxr import Gf, UsdGeom, UsdPhysics
+    """A capsule person for the SENSORS only: render geometry, no collider. The demo moves it by writing its
+    translate every frame; with a collision API that is a teleporting static body, and when it overlapped the
+    machine PhysX resolved the penetration with enormous forces and threw the articulation around (seen in the
+    stream, 10-02). A person cannot push an 8 t machine; the threat monitor is what has to keep them apart."""
+    from pxr import Gf, UsdGeom
     xf = UsdGeom.Xform.Define(stage, path)
     UsdGeom.Xformable(xf).AddTranslateOp().Set(Gf.Vec3d(*[float(v) for v in xyz]))
     cap = UsdGeom.Capsule.Define(stage, f"{path}/body")
@@ -140,7 +143,6 @@ def add_person(stage, path, xyz, height=1.75, radius=0.22):
     cap.CreateAxisAttr("Z")
     cap.CreateDisplayColorAttr([Gf.Vec3f(*COL["person"])])
     UsdGeom.Xformable(cap).AddTranslateOp().Set(Gf.Vec3d(0, 0, height / 2))
-    UsdPhysics.CollisionAPI.Apply(cap.GetPrim())
     return xf
 
 

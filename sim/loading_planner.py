@@ -439,7 +439,9 @@ SITE = dict(
     bed_length=4.4, bed_width=2.2, bed_floor_above_grade=1.20, bed_rail_h=0.50,
     bed_cells=(3, 2),
     # person: walks past between the truck and the pile
-    person_start=(9.0, -8.0), person_end=(-6.0, 7.0), person_speed=1.2, person_start_t=35.0,
+    # walks across the loaded swing arc (closest approach 3.9 m from the swing axis, bucket radius 4.0) without
+    # entering the house footprint; the old (9,-8)->(-6,7) line went straight through the machine
+    person_start=(9.0, -4.0), person_end=(-3.0, 9.0), person_speed=1.2, person_start_t=35.0,
     stop_radius=6.0, resume_radius=7.5,
 )
 
