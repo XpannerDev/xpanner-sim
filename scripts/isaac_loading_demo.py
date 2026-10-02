@@ -68,9 +68,10 @@ def main():
                     help="apply sim/visuals.py (PBR materials, dirt ground, HDRI sky, sun). Look only; off = the flat-colour scene")
     ap.add_argument("--snapshot-only", action="store_true",
                     help="build the scene, render a few frames, save spectator/arm/roof camera PNGs into --record and exit")
-    ap.add_argument("--safety", choices=("threat", "zone"), default="threat",
-                    help="threat: stop only when the PLANNED motion meets the person's PREDICTED path (slow first); "
-                         "zone: stop whenever a person is inside stop_radius")
+    ap.add_argument("--safety", choices=("threat", "zone"), default="zone",
+                    help="zone (default): stop while a person is inside stop_radius, resume once past resume_radius; "
+                         "threat: stop only when the PLANNED motion meets the person's PREDICTED path (slow first). "
+                         "Both are evaluated and logged; the flag picks which one drives the machine")
     args = ap.parse_args()
 
     t_wall0 = time.time()
@@ -123,7 +124,7 @@ def main():
 
     person = None
     if not args.no_person:
-        person = site.add_person(stage, "/World/Person", (*S["person_start"], 0.0))
+        person = site.add_person(stage, "/World/Person", (*S["person_path"][0], 0.0))
         add_labels(person.GetPrim(), ["person"], instance_name="class")
         add_labels(stage.GetPrimAtPath("/World/Person/body"), ["person"], instance_name="class")
 
@@ -204,9 +205,9 @@ def main():
     lidar = RoofLidar(house, translation=(0.64, 0.77, 1.42))                    # 13 cm above the cab roof, vertical fan
     # two 120-deg semantic cameras: front-left (pile + truck) and rear-right, 240 deg between them. Run 4 lost
     # the person 2.75 m from the machine as they walked out of the single camera's view, and the stop released.
-    cam = RoofCamera(house, translation=(1.10, 0.77, 1.36), rpy_deg=(0.0, 12.0, 40.0), hfov_deg=120.0)
+    cam = RoofCamera(house, translation=(1.10, 0.77, 1.36), rpy_deg=(0.0, 12.0, 30.0), hfov_deg=120.0)
     cam.initialize()
-    cam2 = RoofCamera(house, name="roof_cam_rear", translation=(0.20, 0.77, 1.36), rpy_deg=(0.0, 12.0, -140.0), hfov_deg=120.0)
+    cam2 = RoofCamera(house, name="roof_cam_rear", translation=(0.20, 0.77, 1.36), rpy_deg=(0.0, 12.0, -100.0), hfov_deg=120.0)
     cam2.initialize()
     # the bucket camera: on the arm beside its root, looking down the arm at the bucket and whatever is under it --
     # the truck bed at the pour. Its depth image gives a second bed heightmap (camera vs LiDAR vs truth), and in the
@@ -252,14 +253,28 @@ def main():
     report = dict(config=vars(args), site=S, bucket=lp.BUCKET, particles=int(soil.n),
                   particle_volume_m3=soil.particle_volume, cycles=[], safety=[], notes=[])
 
+    # person timeline: walk the path at person_speed, dwelling person_dwell_s wherever two consecutive waypoints coincide
+    _wp = [np.array(w, float) for w in S["person_path"]]
+    _legs = []                                   # (t_start, t_end, a, b)
+    _t = float(S["person_start_t"])
+    for a, b in zip(_wp[:-1], _wp[1:]):
+        d = float(np.linalg.norm(b - a))
+        dur = S["person_dwell_s"] if d < 1e-6 else d / S["person_speed"]
+        _legs.append((_t, _t + dur, a, b))
+        _t += dur
+
     def person_xyz(t):
         if person is None:
             return None
-        t0, v = S["person_start_t"], S["person_speed"]
-        a, b = np.array(S["person_start"], float), np.array(S["person_end"], float)
-        L = np.linalg.norm(b - a)
-        s = min(max((t - t0) * v, 0.0), L)
-        p = a + (b - a) / L * s
+        if t <= _legs[0][0]:
+            p = _legs[0][2]
+        elif t >= _legs[-1][1]:
+            p = _legs[-1][3]
+        else:
+            for t0, t1, a, b in _legs:
+                if t0 <= t < t1:
+                    p = a + (b - a) * ((t - t0) / (t1 - t0))
+                    break
         return np.array([p[0], p[1], 0.0])
 
     body_names = list(art.body_names)
