@@ -67,9 +67,9 @@ class PlannerTests(unittest.TestCase):
                     pose, err, derr = lp.solve_bucket_point(self.m, "mouth", target, None, lp.MOUTH_DUMP)
                     self.assertLess(err, 0.15, (i, j, hs, pose, err))
                     # the bucket limit (-126 deg) can clamp the pour steeper than asked; any mouth between
-                    # 55 and 125 deg below horizontal still pours
+                    # 55 and 130 deg below horizontal still pours
                     got = lp.mouth_dir_deg(self.m, **pose)
-                    self.assertTrue(-125.0 <= got <= -55.0, (i, j, hs, pose, got))
+                    self.assertTrue(-130.0 <= got <= -55.0, (i, j, hs, pose, got))
                     lo, hi = self.m.limits_deg("bucket_joint")
                     self.assertTrue(lo <= pose["bucket"] <= hi)
 

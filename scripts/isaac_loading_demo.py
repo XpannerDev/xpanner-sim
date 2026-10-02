@@ -296,7 +296,7 @@ def main():
                 pin = T_out[:3, 3]
                 b_c = (T_out @ lp.bucket_T_output() @ np.array([*lp.bucket_points()["centre"], 1.0]))[:3]
                 lidar.read(state["t"], parent_T=link_T("house_link"),
-                           exclude=[(T_boom[:3, 3], T_arm[:3, 3], 0.55), (T_arm[:3, 3], pin, 0.5), (pin, b_c, 0.75)])
+                           exclude=[(T_boom[:3, 3], T_arm[:3, 3], 0.55), (T_arm[:3, 3], pin, 0.5), (pin, b_c, 0.6)])
                 if state["frames"] % 2 == 0:
                     d1, n1 = cam.person()
                     d2, n2 = cam2.person()

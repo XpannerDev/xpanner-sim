@@ -18,7 +18,7 @@ import numpy as np
 
 class Soil:
     def __init__(self, stage, scene_path, positions, spacing=0.08, path="/World/Soil", density=1600.0,
-                 friction=1.0, adhesion=0.05, adhesion_scale=3.0, damping=0.5, colour=(0.47, 0.33, 0.20)):
+                 friction=1.0, adhesion=0.02, adhesion_scale=2.0, damping=0.5, colour=(0.47, 0.33, 0.20)):
         # scripts/isaac_soil_test.py (2026-10-02): a 34-deg cone of 8 cm particles does not spread with any of
         # friction 0.9-1.0 / adhesion 0-0.05, but its apex creeps down ~0.4 m in 6 s; adhesion 0.05 + damping 0.5
         # crept least. GUESS-grade material either way: real soil shear strength is not in a PBD model.

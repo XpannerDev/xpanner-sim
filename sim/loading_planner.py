@@ -139,6 +139,7 @@ def bucket_for_mouth_dir(model, boom, arm, want_dir_deg, b=BUCKET):
     """Bucket angle (deg, clamped to the URDF limits) giving the wanted mouth direction at (boom, arm).
     Returns (bucket_deg, achieved_dir_deg)."""
     lo, hi = model.limits_deg("bucket_joint")
+    lo, hi = lo + LIMIT_MARGIN_DEG, hi - LIMIT_MARGIN_DEG
     c = mouth_offset_c(model, b)
     bk = c - boom - arm - want_dir_deg
     bk = (bk + 180.0) % 360.0 - 180.0
@@ -151,7 +152,8 @@ def solve_pin(model, target_base, swing, step_deg=2.0):
     """Boom/arm (deg) putting the bucket pin at target_base (3-vector, base frame) with the given swing.
     Grid over the URDF limits then coordinate descent, like sil/ik.py. Returns (boom, arm, err_m)."""
     target = np.asarray(target_base, float)
-    B, A = model.limits_deg("boom_joint"), model.limits_deg("arm_joint")
+    B, A = (tuple(l + m for l, m in zip(model.limits_deg(j), (LIMIT_MARGIN_DEG, -LIMIT_MARGIN_DEG)))
+            for j in ("boom_joint", "arm_joint"))
 
     def err(bm, ar):
         return float(np.linalg.norm(pin_base(model, swing, bm, ar) - target))
@@ -447,14 +449,18 @@ MOUTH_DIG_ENTER = -175.0     # bucket hanging, teeth down, mouth toward the cab:
 MOUTH_CURL = 92.0            # carrying: mouth straight up (full curl reaches +95.5 with the arm hanging)
 MOUTH_DUMP = -85.0           # pouring: mouth almost straight down, body in front of the pin
 PIN_ABOVE_RAIL = 0.15        # the bucket pin (arm tip) stays this far above the truck rail while over the bed
-CARRY_H = 3.0                # bucket centre above grade while swinging loaded: bottom corner at 2.52 m clears the
-                             # 1.65 m rail and the benched pile's 2.35 m apex (at 2.3 the bucket ploughed the pile top
-                             # during every swing and masked the LiDAR's view of the reach band, run 10)
+CARRY_H = 2.3                # bucket centre above grade while swinging loaded (bottom corner 1.84 m: clears the 1.65 m
+                             # rail and, once the PBD cone has slumped to ~1.7 m at its apex, the benched pile's slope).
+                             # KNOWN-GOOD for swing tracking (runs 9/10: 92 deg target, 92 deg actual). With 2.6 and 3.0
+                             # (boom -63 / -68) the swing crawled at ~5 deg/s instead of 22 in runs 11-15 -- unexplained,
+                             # see docs/LOADING_DEMO.md 3-1 row 13; do not raise this without re-checking the seg logs.
+LIMIT_MARGIN_DEG = 3.0       # the planner never asks for a joint within this of a URDF limit
 DUMP_CLEARANCE = 0.35        # mouth above the measured surface of the chosen cell ("carefully")
 CARRY_CENTRE_R = 4.0         # radius of the bucket centre in the carry pose; inside the bed footprint at 90 deg
 
 # where the bucket can usefully take from the pile with these joint limits (DERIVED from the FK probe)
-DIG_R_MIN, DIG_R_MAX, DIG_Y_MAX = 3.3, 4.6, 1.0
+DIG_R_MIN, DIG_R_MAX, DIG_Y_MAX = 3.3, 4.6, 1.6    # y widened 1.0 -> 1.6 (run 16): straight ahead the carried bucket
+                                                   # hides the pile from the roof LiDAR; the flanks stay visible
 
 
 def carry_pose(model, bearing_deg, b=BUCKET):
@@ -514,7 +520,7 @@ def plan_dig(model, q_now, dig_xy_h, b=BUCKET, surface=None, base_h=None):
     # at the bottom of the scoop the mouth faces the cab (170 deg) so it leads the pull toward the machine
     low = solve_bucket_point(model, "tip", _radial(r_low, bearing, G + z_low), None, 170.0, b)[0]
     end = solve_bucket_point(model, "tip", _radial(r_end, bearing, G + z_end), None, MOUTH_CURL, b)[0]
-    above = dict(enter, boom=max(enter["boom"] - 12.0, model.limits_deg("boom_joint")[0]))
+    above = dict(enter, boom=max(enter["boom"] - 12.0, model.limits_deg("boom_joint")[0] + LIMIT_MARGIN_DEG))
     carry, _ = carry_pose(model, bearing, b)
     tr = JointTrajectory(q_now)
     tr.move(above, "approach")
