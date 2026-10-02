@@ -164,13 +164,11 @@ class RoofCamera:
         from isaacsim.sensors.camera import Camera
         from scipy.spatial.transform import Rotation as R
 
-        # The constructor's `orientation` is the USD prim orientation, and a USD camera looks down its -Z with
-        # +Y up. R_FWD turns that into "look along the parent +X, +Z up"; roll/pitch/yaw are applied on top
-        # (pitch +12 = nose down, yaw +40 = left). Run 3 passed plain Euler angles here and the camera looked
-        # at the ground behind the machine.
-        R_FWD = np.array([[0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
-        R_local = R.from_euler("xyz", rpy_deg, degrees=True).as_matrix() @ R_FWD
-        q = R.from_matrix(R_local).as_quat()                                   # x, y, z, w
+        # The constructor hands `orientation` to set_local_pose(camera_axes="world"): +X forward, +Z up, in the
+        # parent frame (camera.py:303-310, 842-885). So plain roll/pitch/yaw about the parent axes is right
+        # (pitch +12 = nose down, yaw +40 = left). An extra USD-axes rotation here rolled the images 90 deg
+        # (visuals check, 10-02); run 3's "looking at the ground behind" was the camera sitting inside the cab box.
+        q = R.from_euler("xyz", rpy_deg, degrees=True).as_quat()               # x, y, z, w
         self.path = f"{parent_path}/{name}"
         self.cam = Camera(prim_path=self.path, translation=np.array(translation, float),
                           orientation=np.array([q[3], q[0], q[1], q[2]]), resolution=resolution)
@@ -240,6 +238,15 @@ class RoofCamera:
 
     def rgb(self):
         return self.cam.get_rgba()[:, :, :3]
+
+    def pointcloud_world(self):
+        """Depth image -> world points (the deprecated Camera does the unprojection with its own pose)."""
+        try:
+            pc = self.cam.get_pointcloud(world_frame=True)
+            pc = _np(pc).reshape(-1, 3).astype(float)
+            return pc[np.isfinite(pc).all(axis=1)]
+        except Exception:
+            return np.zeros((0, 3))
 
 
 class Spectator:

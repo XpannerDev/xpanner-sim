@@ -10,10 +10,10 @@ import numpy as np
 
 from sim import loading_planner as lp
 
-TRUCK = dict(                                  # CLASS-TYPICAL small tipper, nothing measured
-    wheelbase=3.3, track=1.75, wheel_r=0.42, wheel_w=0.26,
-    cab=(1.9, 2.0, 1.6), cab_z=1.05,             # cab box size and bottom height
-    chassis=(5.4, 1.0, 0.25), chassis_z=0.8,
+TRUCK = dict(                                  # CLASS-TYPICAL 10 t tipper, nothing measured
+    wheelbase=4.2, track=1.95, wheel_r=0.50, wheel_w=0.30,
+    cab=(2.3, 2.3, 2.0), cab_z=1.0,              # cab box size and bottom height (roof 3.0 m)
+    chassis=(7.0, 1.1, 0.30), chassis_z=0.85,
     bed_len=lp.SITE["bed_length"], bed_wid=lp.SITE["bed_width"],
     bed_floor_z=lp.SITE["bed_floor_above_grade"], rail_h=lp.SITE["bed_rail_h"], wall_t=0.06,
 )
@@ -116,9 +116,9 @@ def add_truck(stage, path, bed_centre_xy, yaw_deg, t=TRUCK):
     box(stage, f"{path}/bed_wall_right", (L + 2 * wt, wt, rh), (0, -W / 2 - wt / 2, fz + rh / 2), COL["truck"])
     # chassis + cab ahead of the bed
     cab_x = L / 2 + 0.35 + t["cab"][0] / 2
-    box(stage, f"{path}/chassis", t["chassis"], (cab_x / 2 - 0.3, 0, t["chassis_z"]), COL["tyre"])
+    box(stage, f"{path}/chassis", t["chassis"], (cab_x / 2 - 0.5, 0, t["chassis_z"]), COL["tyre"])
     box(stage, f"{path}/cab", t["cab"], (cab_x, 0, t["cab_z"] + t["cab"][2] / 2), COL["cab"])
-    for i, x in enumerate((cab_x - 0.2, cab_x - 0.2 - t["wheelbase"])):
+    for i, x in enumerate((cab_x - 0.3, cab_x - 0.3 - t["wheelbase"])):
         for j, y in enumerate((t["track"] / 2, -t["track"] / 2)):
             cylinder(stage, f"{path}/wheel_{i}{j}", t["wheel_r"], t["wheel_w"], (x, y, t["wheel_r"]), COL["tyre"])
     return root

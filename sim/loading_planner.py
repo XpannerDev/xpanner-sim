@@ -434,7 +434,9 @@ SITE = dict(
     truck_swing_deg=90.0, bed_centre=(0.0, 4.4), bed_yaw_deg=180.0,   # cab toward -x: at yaw 0 the cab's near corner
                                                                      # (bearing 41 deg, radius 3.9, top 2.65 m) sat in the
                                                                      # loaded swing path and stopped the house at 47 deg (run 8)
-    bed_length=3.0, bed_width=1.8, bed_floor_above_grade=1.15, bed_rail_h=0.50,
+    # 10 t class tipper (CLASS-TYPICAL). The rail top (1.70 m) must stay under the carried bucket's bottom corner
+    # (1.84 m at CARRY_H 2.3); a 15-25 t truck's 2.3 m rail needs the higher carry that is blocked by open item 13.
+    bed_length=4.4, bed_width=2.2, bed_floor_above_grade=1.20, bed_rail_h=0.50,
     bed_cells=(3, 2),
     # person: walks past between the truck and the pile
     person_start=(9.0, -8.0), person_end=(-6.0, 7.0), person_speed=1.2, person_start_t=35.0,
@@ -459,8 +461,11 @@ DUMP_CLEARANCE = 0.35        # mouth above the measured surface of the chosen ce
 CARRY_CENTRE_R = 4.0         # radius of the bucket centre in the carry pose; inside the bed footprint at 90 deg
 
 # where the bucket can usefully take from the pile with these joint limits (DERIVED from the FK probe)
-DIG_R_MIN, DIG_R_MAX, DIG_Y_MAX = 3.3, 4.6, 1.6    # y widened 1.0 -> 1.6 (run 16): straight ahead the carried bucket
-                                                   # hides the pile from the roof LiDAR; the flanks stay visible
+DIG_R_MIN, DIG_R_MAX, DIG_Y_MAX = 3.3, 5.2, 1.6    # y widened 1.0 -> 1.6 (run 16): straight ahead the carried bucket
+                                                   # hides the pile from the roof LiDAR; r widened 4.6 -> 5.2 (run 18):
+                                                   # the near face's returns come back too long and are dropped as
+                                                   # below-grade (open item), so what the LiDAR reliably sees is the
+                                                   # crest and the far side; the entry pose clamps to the reach anyway
 
 
 def carry_pose(model, bearing_deg, b=BUCKET):

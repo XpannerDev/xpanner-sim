@@ -64,6 +64,10 @@ def main():
     ap.add_argument("--video-fps", type=float, default=10.0)
     ap.add_argument("--report", default=f"{REPO}/build/isaac/loading_demo_report.json")
     ap.add_argument("--idle-after", action="store_true", help="keep the app (and stream) alive after the cycles")
+    ap.add_argument("--visuals", action="store_true",
+                    help="apply sim/visuals.py (PBR materials, dirt ground, HDRI sky, sun). Look only; off = the flat-colour scene")
+    ap.add_argument("--snapshot-only", action="store_true",
+                    help="build the scene, render a few frames, save spectator/arm/roof camera PNGs into --record and exit")
     ap.add_argument("--safety", choices=("threat", "zone"), default="threat",
                     help="threat: stop only when the PLANNED motion meets the person's PREDICTED path (slow first); "
                          "zone: stop whenever a person is inside stop_radius")
@@ -127,6 +131,11 @@ def main():
     mound = site.mound_positions(S["mound_centre"], S["mound_radius"], S["mound_height"], args.spacing, z0=S["bench_h"])
     soil = Soil(stage, str(pc.prim_path) if hasattr(pc, "prim_path") else "/physicsScene", mound, spacing=args.spacing)
     log(f"scene: {len(mound)} soil particles, {len(hidden)} PanelLift gprims hidden")
+    if args.visuals:
+        from isaacsim.storage.native import get_assets_root_path
+        from sim import visuals
+        touched = visuals.apply(stage, get_assets_root_path())
+        log(f"visuals: {len(touched['bound'])} prims rebound, created {touched['created']}, hidden {touched['hidden']}")
 
     # Start the articulation AT the carry pose, authored in USD before the first physics step. The importer's
     # default (all joints 0) lays the arm straight out through the stockpile; run 3 let world.reset() take one
@@ -199,12 +208,34 @@ def main():
     cam.initialize()
     cam2 = RoofCamera(house, name="roof_cam_rear", translation=(0.20, 0.77, 1.36), rpy_deg=(0.0, 12.0, -140.0), hfov_deg=120.0)
     cam2.initialize()
+    # the bucket camera: on the arm beside its root, looking down the arm at the bucket and whatever is under it --
+    # the truck bed at the pour. Its depth image gives a second bed heightmap (camera vs LiDAR vs truth), and in the
+    # viewer it is the "arm_cam" entry of the viewport camera list.
+    arm_path = str(site.find_prim(stage, MACHINE, "arm_link").GetPath())
+    bedcam = RoofCamera(arm_path, name="arm_cam", translation=(0.55, -0.45, 0.25), rpy_deg=(0.0, 0.0, 0.0),
+                        resolution=(640, 400), hfov_deg=120.0)
+    bedcam.initialize()
     EYE, TGT = (-9.0, -13.0, 8.5), (2.5, 2.5, 0.8)
     spectator = Spectator(eye=EYE, target=TGT, resolution=(960, 540))
     spectator.initialize()
     set_camera_view(eye=list(EYE), target=list(TGT), camera_prim_path="/OmniverseKit_Persp")
     for _ in range(10):
         world.render()
+
+    if args.snapshot_only:
+        import cv2
+        os.makedirs(args.record or "/tmp", exist_ok=True)
+        for _ in range(40):
+            world.render()
+        for name, camobj in (("spectator", spectator), ("arm_cam", bedcam), ("roof_cam", cam)):
+            img = camobj.rgb()
+            if img is not None and img.size:
+                out = os.path.join(args.record or "/tmp", f"snapshot_{name}.png")
+                ok = cv2.imwrite(out, cv2.cvtColor(np.ascontiguousarray(img), cv2.COLOR_RGB2BGR))
+                log(f"snapshot {name}: {'ok' if ok else 'WRITE FAILED (permissions? the container runs as uid 1234)'} {out}")
+        log(f"snapshots written to {args.record or '/tmp'}")
+        sys.stdout.flush()
+        os._exit(0)
 
     writer = None
     if args.record:
@@ -258,12 +289,13 @@ def main():
         qb = (np.linalg.inv(T) @ np.column_stack([p_all, np.ones(len(p_all))]).T).T[:, :3]
         bk = lp.BUCKET
         riding = ((qb[:, 0] > -0.1) & (qb[:, 0] < bk["height"] + 0.1) & (np.abs(qb[:, 1]) < bk["width"] / 2 + 0.1)
-                  & (qb[:, 2] > -0.1) & (qb[:, 2] < bk["depth"] + 0.1))
+                  & (qb[:, 2] > -0.5) & (qb[:, 2] < bk["depth"] + 0.1))   # heaped above the rim still rides
         p = p_all[~riding]
         pb = bed.to_bed(p)
         in_bed = bed.inside(pb)
         zone = (np.abs(pb[:, 0]) < bed.L / 2 + 1.5) & (np.abs(pb[:, 1]) < bed.W / 2 + 1.5)
-        spilled = zone & ~in_bed & (p[:, 2] < bed.floor_z - 0.3)
+        on_bench = (np.abs(p[:, 0] - S["mound_centre"][0]) < S["bench_half"] + 0.3) & (np.abs(p[:, 1] - S["mound_centre"][1]) < S["bench_half"] + 0.3)
+        spilled = zone & ~in_bed & ~on_bench & (p[:, 2] < bed.floor_z - 0.3)
         r = np.linalg.norm(p[:, :2] - np.array(S["mound_centre"]), axis=1)
         in_mound = (r < S["mound_radius"] + 0.5) & (p[:, 2] < S["bench_h"] + 2.0)
         return dict(in_bed=int(in_bed.sum()), spilled_near_truck=int(spilled.sum()), in_mound=int(in_mound.sum()),
@@ -296,7 +328,7 @@ def main():
                 pin = T_out[:3, 3]
                 b_c = (T_out @ lp.bucket_T_output() @ np.array([*lp.bucket_points()["centre"], 1.0]))[:3]
                 lidar.read(state["t"], parent_T=link_T("house_link"),
-                           exclude=[(T_boom[:3, 3], T_arm[:3, 3], 0.55), (T_arm[:3, 3], pin, 0.5), (pin, b_c, 0.6)])
+                           exclude=[(T_boom[:3, 3], T_arm[:3, 3], 0.55), (T_arm[:3, 3], pin, 0.5), (pin, b_c, 0.8)])   # 0.6 let bucket corners leak into the map (run 17)
                 if state["frames"] % 2 == 0:
                     d1, n1 = cam.person()
                     d2, n2 = cam2.person()
@@ -408,6 +440,7 @@ def main():
 
         cl = lidar.cloud(since=state["t"] - 8.0)
         h_l = terrain.heights(cl, pct=60)              # median-ish: a slope cell's 90th percentile overstates the surface
+        h_l = np.minimum(h_l, np.where(seen_ref, h_ref_lidar + 0.3, h_l))   # a pile does not grow: cap by the reference
         pick = lp.choose_dig_point(terrain, h_l)
         source, h_used = "lidar", h_l
         log(f"cycle {k}: lidar map from {len(cl)} pts (last 8 s): cells seen {int((terrain.last_counts >= 2).sum())}, "
@@ -451,7 +484,23 @@ def main():
         tr, pour = lp.plan_dump(model, q_now, bed, cell, surface)
         cyc["pour_pose_deg"] = pour
         cyc["pour_mouth_above_floor_m"] = surface + lp.DUMP_CLEARANCE
-        advance(tr)
+
+        def on_label(label, _k=k):
+            if label in ("drain", "lift_away") and label not in cyc.get("bedcam", {}):
+                world.render()
+                pc = bedcam.pointcloud_world()
+                h_cam = bed.heights(pc, pct=90)
+                cyc.setdefault("bedcam", {})[label] = dict(points_in_bed=int(bed.counts(pc).sum()), heights=h_cam.tolist())
+                log(f"cycle {_k}: arm camera at {label}: {len(pc)} depth points, {int(bed.counts(pc).sum())} in the bed, "
+                    f"bed heights (camera) {np.round(h_cam, 2).tolist()}")
+                if args.record:
+                    import cv2
+                    img = bedcam.rgb()
+                    if img is not None and img.size:
+                        cv2.imwrite(os.path.join(args.record, f"armcam_cycle{_k}_{label}.png"),
+                                    cv2.cvtColor(np.ascontiguousarray(img), cv2.COLOR_RGB2BGR))
+
+        advance(tr, label_cb=on_label)
         st_after = soil_stats()
         bed_after = np.array(st_after["bed_heights_gt"])
         cyc["bed_after_gt"] = bed_after.tolist()

@@ -91,6 +91,31 @@ LiDAR 더미 체적: 기준 측량 2.0~2.9 m³ vs 정답 6.7 m³ (앞면만 보�
 
 PBD 파티클 10,945 개 + 센서 3~4 대 렌더링으로 **시뮬 1 s 당 벽시계 5.5 s** (L4). 파티클 자체는 싸다(4 더미 44k 개 6 s 가 30 s).
 
+## 3-2. 비주얼 레이어 (10-02, 보기만 바꿈)
+
+`sim/visuals.py` + `scripts/apply_visuals.py`. **충돌·물리·조인트·질량은 건드리지 않는다**: 새로 만드는 것은 `/World/Looks`(재질)와
+`/World/VisualGround`(충돌 API 없는 보기용 흙 슬래브)뿐이고, 기존 프림에는 `material:binding` 관계와 기본 그리드 바닥의 `visibility` 만 쓴다
+(PhysX 는 보이지 않는 프림과도 충돌하므로 바닥 충돌은 그대로 남는다).
+
+| 대상 | 적용 |
+|---|---|
+| 바닥 | 기본 그리드 에셋을 invisible + 80 m 보기용 슬래브에 `NVIDIA/Materials/Base/Natural/Dirt.mdl`(월드 투영, scale 0.25) |
+| 벤치 | `Base/Natural/Soil_Rocky.mdl` |
+| 조명 | 돔 HDRI `Skies/Cloudy/kloofendal_48d_partly_cloudy_4k.hdr` 400 + 디스턴트(태양) 1500, (−38°, 0, 35°), 약간 따뜻한 색 |
+| 장비 본체(`xpanner_yellow`) | OmniPBR 탁한 노랑 (0.52, 0.38, 0.07), roughness 0.5 |
+| 트랙·하부(base/track/dozer 링크, `xpanner_dark`) | OmniPBR 어두운 강철 (0.15), roughness 0.8, metallic 0.55 |
+| 버킷·핀(`output_link/bucket/*`, `xpanner_steel`) | OmniPBR 금속 metallic 1.0, roughness 0.32 |
+| 캡(`xpanner_frame` 하늘색) | 어두운 무채색 (0.11), roughness 0.22 |
+| 표식(`xpanner_accent` 빨강/분홍) | 중간 회색 |
+| 트럭 | 적재함 회색(0.30)·캡 밝은 회색(0.70)·타이어 고무·섀시 강철 |
+| 사람 | 회색 캡슐 |
+| 흙 입자 | 프로토타입 구에 OmniPBR 갈색 (0.27, 0.19, 0.12) |
+
+켜기: 데모는 `--visuals` 플래그(기본 꺼짐). 파일 씬은 `apply_visuals.py --stage in.usd --out out.usda [--screenshot …]` → **원본은 그대로**, 출력 레이어가 원본을 서브레이어로 물고 의견만 얹는다.
+원복: 데모는 플래그를 빼면 끝; 파일 씬은 출력 `.usda` 를 지우면 끝; 런타임에서는 `visuals.revert(stage, touched)`.
+확인: `isaac_loading_demo.py --visuals --snapshot-only --record DIR` 이 스펙테이터·암 카메라·지붕 카메라 PNG 를 저장한다(이 과정에서 구형 `Camera` 의
+생성자 `orientation` 이 **월드 카메라축(+X 전방, +Z 위)** 기준임을 확인 — USD 축 회전을 덧씌우면 영상이 90° 돈다).
+
 ## 4. 한계 · 다음 단계
 
 - **흙은 PBD 파티클이다.** 쌓임·흘림·부피는 나오지만 **반력·전단강도는 의미가 없다**(Olivia 요구표의 Bucket-Soil Interaction 행은 아직 비어 있다).
