@@ -354,7 +354,12 @@ def main():
                     pxyz = person_xyz(state["t"])
                     state["person_dist_gt"] = float(np.linalg.norm(pxyz[:2])) if pxyz is not None else None
                     # the camera sits ~0.7 m from the swing axis: its depth is the distance from the machine
-                    zone_paused = safety.update(state["t"], d_cam, source="camera")
+                    # zone distance = Euclidean distance of the detection's WORLD position from the swing axis, not the
+                    # camera's image-plane depth (that is the z-component only and read a person 10.3 m away at 59 deg
+                    # off-axis as 4.9 m -> false stop at t = 0.8 s, run 21)
+                    d_zone = (float(np.linalg.norm(which.world_xyz[:2])) if which is not None and which.world_xyz is not None
+                              else d_cam)
+                    zone_paused = safety.update(state["t"], d_zone, source="camera")
                     # person track in the world from the camera (position + straight-line velocity)
                     pw = which.world_xyz if which is not None else None
                     if pw is not None:
