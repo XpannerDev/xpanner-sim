@@ -166,7 +166,7 @@ def main():
 
     bed = lp.BedGrid(S["bed_centre"], S["bed_yaw_deg"], S["bed_length"], S["bed_width"],
                      S["bed_floor_above_grade"], *S["bed_cells"])
-    terrain = lp.TerrainGrid(S["mound_centre"], S["mound_radius"] + 0.6, 0.20, S["bench_h"])   # heights above the bench
+    terrain = lp.TerrainGrid(S["mound_centre"], S["mound_radius"] + 0.6, 0.20, S["bench_h"], max_h=S["mound_height"] + 0.2)   # heights above the bench
     safety = lp.SafetyMonitor(S["stop_radius"], S["resume_radius"])     # the distance zone, always logged
     threat = lp.ThreatMonitor()                                         # planned motion vs predicted person path
     person_track = dict(t=None, xy=None, v=None)
@@ -296,7 +296,7 @@ def main():
                 pin = T_out[:3, 3]
                 b_c = (T_out @ lp.bucket_T_output() @ np.array([*lp.bucket_points()["centre"], 1.0]))[:3]
                 lidar.read(state["t"], parent_T=link_T("house_link"),
-                           exclude=[(T_boom[:3, 3], T_arm[:3, 3], 0.55), (T_arm[:3, 3], pin, 0.5), (pin, b_c, 0.9)])
+                           exclude=[(T_boom[:3, 3], T_arm[:3, 3], 0.55), (T_arm[:3, 3], pin, 0.5), (pin, b_c, 0.75)])
                 if state["frames"] % 2 == 0:
                     d1, n1 = cam.person()
                     d2, n2 = cam2.person()
@@ -406,9 +406,12 @@ def main():
         cyc = dict(cycle=k, t_start=state["t"])
         q_now = joints_now()
 
-        h_l = terrain.heights(lidar.cloud(since=state["t"] - 8.0), pct=90)
+        cl = lidar.cloud(since=state["t"] - 8.0)
+        h_l = terrain.heights(cl, pct=60)              # median-ish: a slope cell's 90th percentile overstates the surface
         pick = lp.choose_dig_point(terrain, h_l)
         source, h_used = "lidar", h_l
+        log(f"cycle {k}: lidar map from {len(cl)} pts (last 8 s): cells seen {int((terrain.last_counts >= 2).sum())}, "
+            f"cells > 0.15 m {int((h_l > 0.15).sum())}, max {h_l.max():.2f} m; pick {pick}")
         if pick is None:
             h_used = soil_stats()["terrain_gt"]
             pick = lp.choose_dig_point(terrain, h_used)
@@ -418,7 +421,9 @@ def main():
             break
         cyc["dig_point"] = dict(x=pick[0], y=pick[1], h=pick[2], source=source)
         log(f"cycle {k}: dig at r={math.hypot(pick[0], pick[1]):.2f} y={pick[1]:+.2f} h={pick[2]:.2f} ({source})")
-        tr = lp.plan_dig(model, q_now, pick, surface=terrain.sampler(h_used))
+        # re-run heights() on the map actually used so the sampler's coverage matches it
+        terrain.heights(cl if source == "lidar" else soil.positions(), pct=60)
+        tr = lp.plan_dig(model, q_now, pick, surface=terrain.sampler(h_used, fallback=pick[2]))
         cyc["dig_segments"] = [(lab, {k: round(v, 1) for k, v in qb.items()}) for _, _, _, qb, lab in tr.segments]
         st_before = soil_stats()
         advance(tr)

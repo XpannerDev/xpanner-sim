@@ -365,12 +365,20 @@ class TerrainGrid:
                 h[i[s], j[s]] = max(0.0, float(np.percentile(z[s:e], pct)))
         return h
 
-    def sampler(self, h):
-        """height(x, y) from a heights array (0 outside the grid)."""
+    def sampler(self, h, fallback=None):
+        """height(x, y) from a heights array. A cell the survey did not see (fewer than 2 returns -- the far
+        slope is in the LiDAR's shadow) returns `fallback` when given: the dig entry must not assume the
+        unseen far side is flat (run 11 drove the bucket into the pile from above that way)."""
+        counts = self.last_counts.copy()
+
         def f(x, y):
             i = int((x - self.c[0] + self.half) / self.cell)
             j = int((y - self.c[1] + self.half) / self.cell)
-            return float(h[i, j]) if 0 <= i < self.n and 0 <= j < self.n else 0.0
+            if not (0 <= i < self.n and 0 <= j < self.n):
+                return 0.0 if fallback is None else float(fallback)
+            if fallback is not None and counts[i, j] < 2:
+                return float(fallback)
+            return float(h[i, j])
         return f
 
     def volume(self, h):
@@ -439,7 +447,9 @@ MOUTH_DIG_ENTER = -175.0     # bucket hanging, teeth down, mouth toward the cab:
 MOUTH_CURL = 92.0            # carrying: mouth straight up (full curl reaches +95.5 with the arm hanging)
 MOUTH_DUMP = -85.0           # pouring: mouth almost straight down, body in front of the pin
 PIN_ABOVE_RAIL = 0.15        # the bucket pin (arm tip) stays this far above the truck rail while over the bed
-CARRY_H = 2.3                # bucket centre above grade while swinging loaded (clears a 1.65 m rail)
+CARRY_H = 3.0                # bucket centre above grade while swinging loaded: bottom corner at 2.52 m clears the
+                             # 1.65 m rail and the benched pile's 2.35 m apex (at 2.3 the bucket ploughed the pile top
+                             # during every swing and masked the LiDAR's view of the reach band, run 10)
 DUMP_CLEARANCE = 0.35        # mouth above the measured surface of the chosen cell ("carefully")
 CARRY_CENTRE_R = 4.0         # radius of the bucket centre in the carry pose; inside the bed footprint at 90 deg
 
@@ -476,7 +486,9 @@ def choose_dig_point(terrain, h, r_min=DIG_R_MIN, r_max=DIG_R_MAX, y_max=DIG_Y_M
 
 
 TIP_MIN_ABOVE_GRADE = 0.35       # the joint limits keep the pin >= 1.18 m up; the tooth edge bottoms out near here
-SCOOP_DEPTH = 0.35               # how far below the measured surface the edge is pulled
+SCOOP_DEPTH = 0.55               # how far below the measured surface the edge is pulled. The LiDAR cell height is the
+                                 # 90th percentile of a 0.2 m cell on a slope and the PBD pile keeps creeping down after
+                                 # the survey, so 0.35 left the edge in the air (runs 11-13: < 10 particles)
 
 
 def plan_dig(model, q_now, dig_xy_h, b=BUCKET, surface=None, base_h=None):
@@ -492,12 +504,16 @@ def plan_dig(model, q_now, dig_xy_h, b=BUCKET, surface=None, base_h=None):
     base = SITE["bench_h"] if base_h is None else float(base_h)       # surface heights are above this
     r_in, r_low, r_end = r + 0.6, r - 0.1, max(r - 0.8, DIG_R_MIN - 0.3)
     p_in, p_low = _radial(r_in, bearing, 0.0), _radial(r_low, bearing, 0.0)
+    p_end = _radial(r_end, bearing, 0.0)
     z_in = max(base + float(surf(p_in[0], p_in[1])) + 0.15, TIP_MIN_ABOVE_GRADE + 0.1)
     z_low = max(base + float(surf(p_low[0], p_low[1])) - SCOOP_DEPTH, TIP_MIN_ABOVE_GRADE, base + 0.05)
+    # the curl finishes still under the surface at the near end of the sweep (run 12: ending 0.15 above the
+    # low point left the edge in the air on the near slope and the bucket came up with 6 particles)
+    z_end = max(base + float(surf(p_end[0], p_end[1])) - 0.2, TIP_MIN_ABOVE_GRADE, base + 0.05)
     enter = solve_bucket_point(model, "tip", _radial(r_in, bearing, G + z_in), None, MOUTH_DIG_ENTER, b)[0]
     # at the bottom of the scoop the mouth faces the cab (170 deg) so it leads the pull toward the machine
     low = solve_bucket_point(model, "tip", _radial(r_low, bearing, G + z_low), None, 170.0, b)[0]
-    end = solve_bucket_point(model, "tip", _radial(r_end, bearing, G + max(z_low + 0.15, base + 0.3)), None, MOUTH_CURL, b)[0]
+    end = solve_bucket_point(model, "tip", _radial(r_end, bearing, G + z_end), None, MOUTH_CURL, b)[0]
     above = dict(enter, boom=max(enter["boom"] - 12.0, model.limits_deg("boom_joint")[0]))
     carry, _ = carry_pose(model, bearing, b)
     tr = JointTrajectory(q_now)
